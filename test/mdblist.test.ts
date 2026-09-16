@@ -152,6 +152,53 @@ test('MDBList pull imports watched aliases, exact specials, progress and explici
     progressPercent: 25, positionMs: 600000, durationMs: 2400000, played: false, at: Date.parse(at) / 1000 });
 });
 
+test('MDBList imports numeric and decimal-string progress for movies and episodes, including zero', async () => {
+  for (const type of ['movie', 'episode']) for (const progress of [0, 25, 45.125, 100, '0.00', '25.00', '45.125', '100.00', ' 12.50 ', '2.5e1']) {
+    const f = fixture(c => c.path === '/sync/playback' ? [{ ...resume, type, movie: movie.movie, progress }] : undefined);
+    const result = await f.provider.pull(credentials);
+    assert.equal(result.items.length, 1);
+    const item = result.items[0];
+    assert.equal(item.progressPercent, Number(progress));
+    assert.equal(item.positionMs, Math.round(2400000 * Number(progress) / 100));
+    assert.equal(item.played, false);
+    assert.equal(item.videoId, type === 'movie' ? 'tt0111161' : 'tt0903747:0:2');
+    assert.deepEqual(result.watched.movies, ['tmdb:278', 'tt0111161']);
+    assert.equal(f.calls.some(c => c.method === 'POST'), false);
+  }
+});
+
+test('MDBList uses progress_at_update only when stored progress is absent, without projecting playback time', async () => {
+  for (const progress of [undefined, null]) for (const fallback of [0, '0.00', 37.5, '37.50']) {
+    const f = fixture(c => c.path === '/sync/playback' ? [{ ...resume, progress, progress_at_update: fallback, paused_at: null,
+      updated_at_ts: Date.parse(at) / 1000 - 86400 }] : undefined);
+    const item = (await f.provider.pull(credentials)).items[0];
+    assert.equal(item.progressPercent, Number(fallback));
+    assert.equal(item.positionMs, 2400000 * Number(fallback) / 100);
+  }
+  for (const progress of [0, '0.00', 25, '25.00']) {
+    const f = fixture(c => c.path === '/sync/playback' ? [{ ...resume, progress, progress_at_update: 75 }] : undefined);
+    assert.equal((await f.provider.pull(credentials)).items[0].progressPercent, Number(progress));
+  }
+});
+
+test('MDBList rejects malformed or out-of-range progress without coercing it to zero or leaking response data', async () => {
+  for (const progress of [undefined, null, '', ' ', true, false, [], [25], {}, '25%', '25garbage', '0x10', 'NaN', 'Infinity', '1e309', -1, 101, '-0.01', '100.01', credentials.token]) {
+    const f = fixture(c => c.path === '/sync/playback' ? [resume, { ...resume, progress }] : undefined);
+    await assert.rejects(f.provider.pull(credentials), (error: any) => {
+      assert.match(error.message, /invalid playback progress at item 2/);
+      assert.match(error.message, /previous state preserved/);
+      assert.equal(error.message.includes(credentials.token), false);
+      return true;
+    });
+  }
+  for (const progress of [true, '', 'bad', 101]) {
+    const f = fixture(c => c.path === '/sync/playback' ? [{ ...resume, progress, progress_at_update: 25 }] : undefined);
+    await assert.rejects(f.provider.pull(credentials), /invalid playback progress/, 'a secondary field must not hide corrupt stored progress');
+  }
+  const invalidFallback = fixture(c => c.path === '/sync/playback' ? [{ ...resume, progress: null, progress_at_update: '101.00' }] : undefined);
+  await assert.rejects(invalidFallback.provider.pull(credentials), /progress_at_update: outside 0-100/);
+});
+
 test('MDBList follows all watched cursors and supports documented offset pagination without cursors', async () => {
   for (const cursorMode of [true, false]) {
     const second = { ...movie, movie: { ids: { tmdb: 550 } } };
@@ -389,9 +436,44 @@ test('MDBList later-page failures preserve the full SQLite snapshot and recovery
   assert.notEqual(recovered.version, initial.version);
 });
 
+test('MDBList malformed progress preserves every stored resume and history until a complete recovery', async t => {
+  let changed = false, broken = true;
+  const f = fixture(c => {
+    if (c.path === '/sync/last_activities') return { ...activity, journal_at: changed ? '2026-09-16T12:00:00Z' : at };
+    if (changed && c.path === '/sync/watched' && c.params.get('mediatype') === 'movie') return page('movies', []);
+    if (c.path === '/sync/playback') return [
+      { ...resume, progress: changed ? '12.50' : '25.00', updated_at: changed ? '2026-09-16T12:00:00Z' : at },
+      { ...resume, id: 2, type: 'movie', movie: movie.movie, progress: changed && broken ? '' : '45.00' },
+    ];
+  });
+  const settings = loadSettings({ GLOBAL_API_KEY: 'a'.repeat(32), ENCRYPTION_KEY: 'b'.repeat(64) });
+  const store = new Store(':memory:', settings.encryptionKey); t.after(() => store.close());
+  const service = new TrackerService(store, settings, { mdblist: f.provider, simkl: f.provider, pmdb: f.provider });
+  const p = store.create({ name: 'MDBList', consent: true, pushProviders: [], pullProvider: 'mdblist' });
+  store.connect(p.id, 'mdblist', credentials);
+  await service.refresh(p);
+  const initial = await service.pull(p, null);
+  const saved = (store.db.prepare('SELECT data FROM snapshots').get() as any).data;
+  assert.equal(initial.items.length, 2);
+  changed = true;
+  await assert.rejects(service.refresh(p), /invalid playback progress at item 2/);
+  assert.equal((store.db.prepare('SELECT data FROM snapshots').get() as any).data, saved);
+  const stale = await service.pull(p, initial.version);
+  assert.deepEqual(stale.items, initial.items);
+  assert.equal(Object.hasOwn(stale, 'watched'), false);
+  await assert.rejects(service.pull(p, null), /previous history preserved/);
+  broken = false; await service.refresh(p);
+  const recovered = await service.pull(p, initial.version);
+  assert.equal(recovered.items.length, 2);
+  assert.equal(recovered.items.find(i => i.type === 'series')!.positionMs, 300000);
+  assert.equal(recovered.items.find(i => i.type === 'movie')!.progressPercent, 45);
+  assert.deepEqual(recovered.watched?.movies, []);
+  assert.equal((store.db.prepare('SELECT error FROM snapshots').get() as any).error, null);
+});
+
 test('MDBList 85% fallback is served locally until a newer external resume replaces it through the service', async t => {
   let external = false;
-  const f = fixture(c => c.path === '/sync/playback' ? [{ ...resume, progress: 20, updated_at: external ? '2026-09-16T11:00:00Z' : '2026-09-16T09:00:00Z', paused_at: null }] : undefined);
+  const f = fixture(c => c.path === '/sync/playback' ? [{ ...resume, progress: '20.00', updated_at: external ? '2026-09-16T11:00:00Z' : '2026-09-16T09:00:00Z', paused_at: null }] : undefined);
   const settings = loadSettings({ GLOBAL_API_KEY: 'a'.repeat(32), ENCRYPTION_KEY: 'b'.repeat(64) });
   const store = new Store(':memory:', settings.encryptionKey); t.after(() => store.close());
   const service = new TrackerService(store, settings, { mdblist: f.provider, simkl: f.provider, pmdb: f.provider });

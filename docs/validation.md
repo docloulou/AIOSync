@@ -7,7 +7,7 @@ npm run check
 npm test
 ```
 
-The suite covers HTTP authentication, OAuth state, profile isolation, credential encryption, durable queue checkpoints, retries, provider responses, pagination, watched-state versions, and resume handling. Provider APIs are simulated. SQLite persistence tests use a real temporary database on disk. MDBList regressions cover cursor pages without totals, legacy per-media totals, nested episode parents, missing activity markers, absent-session cleanup, and preservation of the complete SQLite snapshot when a later page fails.
+The suite covers HTTP authentication, OAuth state, profile isolation, credential encryption, durable queue checkpoints, retries, provider responses, pagination, watched-state versions, and resume handling. Provider APIs are simulated. SQLite persistence tests use a real temporary database on disk. MDBList regressions cover cursor pages without totals, legacy per-media totals, nested episode parents, missing activity markers, absent-session cleanup, numeric and decimal-string progress, the optional `progress_at_update` fallback, and preservation of the complete SQLite snapshot when a later page or playback entry fails.
 
 `npm run check` checks the syntax executed by Node. It does not perform static TypeScript type checking.
 

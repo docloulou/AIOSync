@@ -31,6 +31,8 @@ MDBList's pause **and** stop endpoints automatically mark a title watched at **8
 
 Starting playback uses the native start endpoint. AIOSync also keeps a local backup while playback is active; that backup expires after 24 hours without further events. Paused local fallback points remain until superseded. A newer timestamped remote resume replaces an older local backup, so progress made with another player can be imported on the next refresh. Absolute positions require a known runtime; otherwise MDBList's stored percentage is returned.
 
+Playback percentages accept both numbers and decimal strings such as `"45.00"`, a live format documented by [NuvioTV's MDBList client](https://github.com/Cxsmo-ai/NuvioTV-Custom/blob/10ce149523374d3407d691afe392a7ae3e95b9b3/app/src/main/java/com/nuvio/tv/data/remote/dto/mdblist/MDBListSyncDtos.kt). If `progress` is absent or null, the documented `progress_at_update` can supply the stored point. Zero is preserved; elapsed time is never added. Missing, malformed or out-of-range values preserve the complete previous snapshot and report the row and field without exposing raw account data.
+
 Manual watched writes retain the event timestamp. Native completed scrobbles use MDBList's server timestamp. Synchronization maintains watched state, not exact rewatch counts. Unwatching clears the current watched status without deleting MDBList's separate play-history records. An already absent resume (`404` on `/scrobble/clear`) is treated as successful cleanup; authentication and server failures remain errors.
 
 ## History and limits

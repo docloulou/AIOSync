@@ -32,6 +32,20 @@ function timestamp(value: unknown): number | undefined {
   if (typeof value !== 'string' || !Number.isFinite(Date.parse(value))) invalid('invalid playback timestamp');
   return Math.floor(Date.parse(value as string) / 1000);
 }
+function playbackProgress(row: Json, index: number): number {
+  // Live responses can serialize the stored percentage as a decimal string.
+  // The optional fallback is a stored point too; never extrapolate elapsed time.
+  const field = row.progress == null && row.progress_at_update != null ? 'progress_at_update' : 'progress';
+  const raw: unknown = row[field];
+  const value = typeof raw === 'string' && /^[+-]?(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][+-]?\d+)?$/.test(raw.trim()) ? Number(raw.trim()) : raw;
+  if (typeof value !== 'number' || !Number.isFinite(value) || value < 0 || value > 100) {
+    const kind = raw === undefined ? 'missing' : raw === null ? 'null' : Array.isArray(raw) ? 'array' : typeof raw;
+    const reason = typeof value === 'number' && Number.isFinite(value) ? 'outside 0-100' : `expected a finite decimal number, received ${kind}`;
+    // Report the field and row, never raw upstream content or credentials.
+    invalid(`invalid playback progress at item ${index + 1} (${field}: ${reason}); previous state preserved`);
+  }
+  return value;
+}
 function coordinates(row: Json): { season: number; episode: number } {
   const season = row.season_number ?? (typeof row.season === 'object' ? row.season?.number : row.season);
   const episode = row.number ?? row.episode_number ?? (typeof row.episode === 'number' ? row.episode : row.episode?.number);
@@ -88,7 +102,7 @@ export class MdblistProvider implements Provider {
     if (!client) {
       client = new HttpClient('https://api.mdblist.com', {
         fetch: this.fetcher, intervalMs: this.fetcher ? 0 : 100, limiterKey: `mdblist:${credentials.token}`,
-        headers: { 'Content-Type': 'application/json', 'User-Agent': 'AIOSync/1.1.1' },
+        headers: { 'Content-Type': 'application/json', 'User-Agent': 'AIOSync/1.1.2' },
       });
       this.clients.set(credentials.token, client);
     }
@@ -286,10 +300,10 @@ export class MdblistProvider implements Provider {
     const playback = await this.request('/sync/playback', credentials);
     if (!Array.isArray(playback)) invalid('invalid playback list');
     const items = new Map<string, WatchItem>();
-    for (const entry of playback) {
+    for (const [index, entry] of playback.entries()) {
       const row = object(entry, 'playback');
       if (row.type !== 'movie' && row.type !== 'episode') invalid('unknown playback type');
-      if (typeof row.progress !== 'number' || !Number.isFinite(row.progress) || row.progress < 0 || row.progress > 100) invalid('invalid playback progress');
+      const progress = playbackProgress(row, index);
       if (row.runtime != null && !integer(row.runtime)) invalid('invalid playback runtime');
       const best = identities(row, row.type === 'movie' ? 'movie' : 'series')[0]!;
       const dates = [timestamp(row.updated_at), timestamp(row.paused_at)];
@@ -297,8 +311,8 @@ export class MdblistProvider implements Provider {
       const knownDates = dates.filter((d): d is number => d !== undefined);
       const at = knownDates.length ? Math.max(...knownDates) : undefined;
       const durationMs = row.runtime > 0 ? row.runtime * 60000 : undefined;
-      const item: WatchItem = { ...best, progressPercent: row.progress, played: false,
-        ...(at !== undefined ? { at } : {}), ...(durationMs !== undefined ? { durationMs, positionMs: Math.round(durationMs * row.progress / 100) } : {}) };
+      const item: WatchItem = { ...best, progressPercent: progress, played: false,
+        ...(at !== undefined ? { at } : {}), ...(durationMs !== undefined ? { durationMs, positionMs: Math.round(durationMs * progress / 100) } : {}) };
       const key = `${item.type}:${item.videoId}`;
       if (!items.has(key) || (at ?? 0) >= (items.get(key)!.at ?? 0)) items.set(key, item);
     }
