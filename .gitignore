@@ -1,0 +1,14 @@
+.env
+.env.*
+!.env.example
+data/
+node_modules/
+coverage/
+*.log
+.DS_Store
+*.sqlite
+*.sqlite-shm
+*.sqlite-wal
+*.db
+*.db-shm
+*.db-wal

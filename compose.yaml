@@ -1,0 +1,33 @@
+services:
+  tracker:
+    image: aiostreams-tracker-bridge:local
+    pull_policy: build
+    build:
+      context: .
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    init: true
+    env_file:
+      - .env
+    environment:
+      HOST: 0.0.0.0
+      PORT: "7000"
+      DATA_DIR: /app/data
+    ports:
+      - "${HOST_BIND:-127.0.0.1}:${HOST_PORT:-7000}:7000"
+    volumes:
+      - tracker-data:/app/data
+    stop_grace_period: 30s
+    healthcheck:
+      test:
+        - CMD
+        - node
+        - -e
+        - "fetch('http://127.0.0.1:7000/healthz').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"
+      interval: 30s
+      timeout: 5s
+      start_period: 15s
+      retries: 3
+
+volumes:
+  tracker-data:
