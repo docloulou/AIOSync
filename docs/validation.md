@@ -11,6 +11,8 @@ The suite covers HTTP authentication, OAuth state, profile isolation, credential
 
 `npm run check` checks the syntax executed by Node. It does not perform static TypeScript type checking.
 
+Scrobble regressions include decimal-string confirmations, HTTP 201 at zero progress, malformed acknowledgements, checkpoint reuse, and manual retry of delayed pending jobs without reordering events or touching completed work and other profiles. A live MDBList check on 2026-09-16 confirmed decimal-string playback responses and a successful start acknowledgement containing `"progress": "0.00"`. The temporary test title was absent from playback after cleanup. This check did not exercise watched/unwatched writes or validate the full Jellyfin flow.
+
 GitHub Actions also builds the production container and runs `scripts/docker-smoke.sh`, checking startup, the non-root user, SQLite storage, health, static assets, and rejected unauthenticated administration requests. Test results are reported by the workflow for each revision; they do not validate your provider accounts.
 
 ## Live integration checks

@@ -86,6 +86,41 @@ test('MDBList sends real native start, pause, incomplete stop and completed stop
   assert.deepEqual(calls.at(-1)!.body, { movie: { ids: { tmdb: 278 } }, progress: 25 });
 });
 
+test('MDBList accepts decimal-string scrobble confirmations, including HTTP 201 start at zero with played:true', async () => {
+  const f = fixture(c => c.path.startsWith('/scrobble/') ? Response.json({
+    action: c.path.endsWith('/stop') ? c.body.progress >= 80 ? 'scrobble' : 'pause' : c.path.split('/').at(-1),
+    progress: c.body.progress.toFixed(2),
+  }, { status: c.path.endsWith('/start') ? 201 : 200 }) : undefined);
+  const events = [event({ event: 'start', positionMs: 0, played: true }), event({ event: 'pause' }),
+    event({ event: 'stop', played: false }), event({ event: 'stop', played: true, positionMs: 2160000 })];
+  for (const e of events) {
+    const saved = checkpoint();
+    await f.provider.push(e, 'series', credentials, saved);
+    await f.provider.push(e, 'series', credentials, saved);
+  }
+  assert.deepEqual(f.calls.map(c => c.path), ['/scrobble/start', '/scrobble/pause', '/scrobble/stop', '/scrobble/stop']);
+  assert.deepEqual(f.calls.map(c => c.body.progress), [0, 25, 25, 90]);
+  assert.equal(f.calls.some(c => c.path === '/sync/watched' || c.path === '/scrobble/clear'), false);
+});
+
+test('MDBList never checkpoints malformed scrobble acknowledgements and retries only until confirmed', async () => {
+  for (const response of [{}, { action: '' }, { action: ' ' }, { action: 'error', progress: 0 }, { error: credentials.token },
+    ...[undefined, null, true, false, '', ' ', [], {}, 'NaN', '0x10', '25%', -1, 101, credentials.token].map(progress => ({ action: 'start', progress }))]) {
+    let broken = true;
+    const f = fixture(() => broken ? response : Response.json({ action: 'start', progress: '0.00' }, { status: 201 }));
+    const saved = checkpoint(), e = event({ event: 'start', positionMs: 0, played: true });
+    await assert.rejects(f.provider.push(e, 'series', credentials, saved), (error: any) => {
+      assert.match(error.message, /MDBList:/);
+      assert.equal(error.message.includes(credentials.token), false);
+      return true;
+    });
+    broken = false;
+    await f.provider.push(e, 'series', credentials, saved);
+    await f.provider.push(e, 'series', credentials, saved);
+    assert.equal(f.calls.length, 2, 'failed responses must not complete the checkpoint; confirmed writes must not replay');
+  }
+});
+
 test('MDBList keeps incomplete progress at 80%+ and invalid positions local without a destructive scrobble', async () => {
   const { provider, calls } = fixture();
   for (const action of ['pause', 'stop'] as const) for (const percent of [80, 85, 100]) {

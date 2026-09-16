@@ -32,19 +32,21 @@ function timestamp(value: unknown): number | undefined {
   if (typeof value !== 'string' || !Number.isFinite(Date.parse(value))) invalid('invalid playback timestamp');
   return Math.floor(Date.parse(value as string) / 1000);
 }
-function playbackProgress(row: Json, index: number): number {
-  // Live responses can serialize the stored percentage as a decimal string.
-  // The optional fallback is a stored point too; never extrapolate elapsed time.
-  const field = row.progress == null && row.progress_at_update != null ? 'progress_at_update' : 'progress';
-  const raw: unknown = row[field];
+function percentage(raw: unknown, fail: (reason: string) => never): number {
+  // Both playback reads and scrobble acknowledgements can use decimal strings.
   const value = typeof raw === 'string' && /^[+-]?(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][+-]?\d+)?$/.test(raw.trim()) ? Number(raw.trim()) : raw;
   if (typeof value !== 'number' || !Number.isFinite(value) || value < 0 || value > 100) {
     const kind = raw === undefined ? 'missing' : raw === null ? 'null' : Array.isArray(raw) ? 'array' : typeof raw;
     const reason = typeof value === 'number' && Number.isFinite(value) ? 'outside 0-100' : `expected a finite decimal number, received ${kind}`;
     // Report the field and row, never raw upstream content or credentials.
-    invalid(`invalid playback progress at item ${index + 1} (${field}: ${reason}); previous state preserved`);
+    fail(reason);
   }
   return value;
+}
+function playbackProgress(row: Json, index: number): number {
+  // The optional fallback is a stored point too; never extrapolate elapsed time.
+  const field = row.progress == null && row.progress_at_update != null ? 'progress_at_update' : 'progress';
+  return percentage(row[field], reason => invalid(`invalid playback progress at item ${index + 1} (${field}: ${reason}); previous state preserved`));
 }
 function coordinates(row: Json): { season: number; episode: number } {
   const season = row.season_number ?? (typeof row.season === 'object' ? row.season?.number : row.season);
@@ -102,7 +104,7 @@ export class MdblistProvider implements Provider {
     if (!client) {
       client = new HttpClient('https://api.mdblist.com', {
         fetch: this.fetcher, intervalMs: this.fetcher ? 0 : 100, limiterKey: `mdblist:${credentials.token}`,
-        headers: { 'Content-Type': 'application/json', 'User-Agent': 'AIOSync/1.1.2' },
+        headers: { 'Content-Type': 'application/json', 'User-Agent': 'AIOSync/1.1.3' },
       });
       this.clients.set(credentials.token, client);
     }
@@ -168,8 +170,10 @@ export class MdblistProvider implements Provider {
     if (!['start', 'pause', 'stop'].includes(event.event)) throw new UpstreamError('Unrecognized MDBList event', 422);
     await checkpoint(`mdblist:scrobble:${event.event}`, async () => {
       const result = object(await this.request(`/scrobble/${event.event}`, credentials, {}, { ...body, progress }), 'scrobble response');
-      if (typeof result.action !== 'string' || !result.action || result.action === 'error'
-        || typeof result.progress !== 'number' || !Number.isFinite(result.progress) || result.progress < 0 || result.progress > 100) invalid('missing scrobble confirmation');
+      if (typeof result.action !== 'string' || !result.action.trim() || result.action === 'error') {
+        invalid(`invalid ${event.event} scrobble confirmation (action: missing or invalid)`);
+      }
+      percentage(result.progress, reason => invalid(`invalid ${event.event} scrobble confirmation (progress: ${reason})`));
       return true;
     });
     if (nativeCompletion) { const cache = this.caches.get(credentials.token); if (cache) cache.dirty = true; }

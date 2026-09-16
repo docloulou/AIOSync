@@ -33,6 +33,8 @@ Starting playback uses the native start endpoint. AIOSync also keeps a local bac
 
 Playback percentages accept both numbers and decimal strings such as `"45.00"`, a live format documented by [NuvioTV's MDBList client](https://github.com/Cxsmo-ai/NuvioTV-Custom/blob/10ce149523374d3407d691afe392a7ae3e95b9b3/app/src/main/java/com/nuvio/tv/data/remote/dto/mdblist/MDBListSyncDtos.kt). If `progress` is absent or null, the documented `progress_at_update` can supply the stored point. Zero is preserved; elapsed time is never added. Missing, malformed or out-of-range values preserve the complete previous snapshot and report the row and field without exposing raw account data.
 
+Scrobble confirmations also accept decimal strings, including HTTP 201 with `"progress": "0.00"` for a start. A `played: true` flag on a start does not mark the title watched. After updating from a version that rejected these confirmations, use **Retry events** to restart delayed pending or failed jobs. Saved checkpoints and event order are retained.
+
 Manual watched writes retain the event timestamp. Native completed scrobbles use MDBList's server timestamp. Synchronization maintains watched state, not exact rewatch counts. Unwatching clears the current watched status without deleting MDBList's separate play-history records. An already absent resume (`404` on `/scrobble/clear`) is treated as successful cleanup; authentication and server failures remain errors.
 
 ## History and limits

@@ -44,7 +44,7 @@ export function createApp(settings:Settings,options:{store?:Store;providers?:Rec
     if(url.pathname==='/healthz'&&method==='GET')return json(res,200,{ok:true});
     if(url.pathname==='/manifest.json'&&method==='GET'){
       res.setHeader('Access-Control-Allow-Origin','*');
-      return json(res,200,{id:'org.trackerbridge',version:'1.1.2',name:'AIOSync — SIMKL / PMDB / MDBList',
+      return json(res,200,{id:'org.trackerbridge',version:'1.1.3',name:'AIOSync — SIMKL / PMDB / MDBList',
         description:'Open the configuration page to connect your accounts and create a personal addon URL.',types:['movie','series'],resources:[],catalogs:[],
         behaviorHints:{configurable:true,configurationRequired:true}});
     }
@@ -114,7 +114,9 @@ export function createApp(settings:Settings,options:{store?:Store;providers?:Rec
         if(action==='rotate'&&method==='POST'){p.token=randomToken();store.save(p);return json(res,200,{manifestUrl:service.url(p)});}
         if(action==='refresh'&&method==='POST'){void service.refresh(p).catch(()=>{});return json(res,202,{accepted:true});}
         if(action==='retry'&&method==='POST'){
-          store.db.prepare("UPDATE jobs SET status='pending',due=0,attempts=0,error=NULL WHERE profile=? AND status IN ('blocked','failed')").run(p.id);return json(res,200,{ok:true});
+          // A rejected confirmation remains pending during backoff and can hold
+          // this connection's queue. Retry it too, retaining order/checkpoints.
+          store.db.prepare("UPDATE jobs SET status='pending',due=0,attempts=0,error=NULL WHERE profile=? AND status IN ('pending','blocked','failed')").run(p.id);return json(res,200,{ok:true});
         }
         if(action==='jobs'&&method==='GET'){
           const rows=store.db.prepare('SELECT provider,payload,status,error,attempts FROM jobs WHERE profile=? ORDER BY id DESC LIMIT 100').all(p.id) as any[];
