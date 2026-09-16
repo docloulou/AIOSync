@@ -20,10 +20,13 @@ function defaults(call: Call): unknown {
   if (call.path === '/user') return { user_id: 123, username: 'test-account' };
   if (call.path === '/sync/last_activities') return activity;
   if (call.path === '/sync/watched' && call.method === 'GET') {
-    return call.params.get('mediatype') === 'movie' ? page('movies', [movie]) : page('episodes', [episode]);
+    // Current cursor pages omit total/limit; watched episodes nest the parent show.
+    return { ...(call.params.get('mediatype') === 'movie' ? { movies: [movie] } : {
+      episodes: [{ last_watched_at: at, episode: { ...episode.episode, show: episode.show } }],
+    }), pagination: { has_more: false, next_cursor: null } };
   }
   if (call.path === '/sync/playback') return [resume];
-  if (call.path === '/upnext') return { items: [{ show: episode.show, next_episode: { season: 0, number: 2 }, progress: { total: 10 }, last_watched_at: at }], limit: 100, has_more: false };
+  if (call.path === '/upnext') return { items: [{ show: episode.show, next_episode: { season: 0, episode: 2 }, progress: { total: 10 }, last_watched_at: at }], limit: 100, has_more: false };
   if (call.path === '/sync/watched') return { updated: { movies: 1, episodes: 1 }, not_found: {}, errors: [] };
   if (call.path === '/sync/watched/remove') return { deleted: { movies: 1, episodes: 1 }, not_found: {} };
   if (call.path === '/scrobble/clear') return { action: 'clear', deleted: true };
@@ -163,6 +166,95 @@ test('MDBList follows all watched cursors and supports documented offset paginat
   }
 });
 
+test('MDBList reads every cursor page without total or limit, including a final empty page', async () => {
+  for (const emptyLast of [false, true]) {
+    const f = fixture(c => {
+      if (c.path !== '/sync/watched' || c.params.get('mediatype') !== 'movie') return;
+      assert.equal(c.params.has('offset'), false, 'cursor mode must not send an offset');
+      const cursor = c.params.get('cursor');
+      if (cursor === null) return { movies: [movie], pagination: { has_more: true, next_cursor: 'page&two=1' } };
+      if (cursor === 'page&two=1') return { movies: [{ movie: { ids: { tmdb: 550 } } }], pagination: { total: null, has_more: emptyLast, next_cursor: emptyLast ? 'page-three' : null } };
+      assert.equal(cursor, 'page-three');
+      return { movies: [], pagination: { next_cursor: null } };
+    });
+    const result = await f.provider.pull(credentials);
+    assert.deepEqual(result.watched.movies, ['tmdb:278', 'tmdb:550', 'tt0111161']);
+    assert.equal(f.calls.filter(c => c.path === '/sync/watched' && c.params.get('mediatype') === 'movie').length, emptyLast ? 3 : 2);
+  }
+});
+
+test('MDBList legacy has_more pagination works with per-media totals and an explicit null cursor', async () => {
+  for (const includeTotal of [true, false]) {
+    const f = fixture(c => {
+      if (c.path !== '/sync/watched' || c.params.get('mediatype') !== 'movie') return;
+      assert.equal(c.params.has('cursor'), false);
+      const after = c.params.has('offset');
+      if (after) assert.equal(c.params.get('offset'), '1');
+      return { movies: [after ? { movie: { ids: { tmdb: 550 } } } : movie], pagination: {
+        offset: after ? '1' : '0', limit: '1', ...(includeTotal ? { total_movies: '2', total_episodes: 40 } : {}), has_more: !after, next_cursor: null,
+      } };
+    });
+    assert.deepEqual((await f.provider.pull(credentials)).watched.movies, ['tmdb:278', 'tmdb:550', 'tt0111161']);
+  }
+});
+
+test('MDBList accepts confirmed empty histories but never treats a missing nonempty bucket as empty', async () => {
+  for (const pagination of [{ total_movies: 0 }, { total: 0, limit: 1000, next_cursor: null }]) {
+    const f = fixture(c => c.path === '/sync/watched' && c.params.get('mediatype') === 'movie' ? { pagination } : undefined);
+    assert.deepEqual((await f.provider.pull(credentials)).watched.movies, []);
+  }
+  const empty = fixture(c => c.path === '/sync/watched' && c.params.get('mediatype') === 'movie' ? { movies: [], pagination: { has_more: false } } : undefined);
+  assert.deepEqual((await empty.provider.pull(credentials)).watched.movies, []);
+  const missing = fixture(c => c.path === '/sync/watched' && c.params.get('mediatype') === 'movie' ? { pagination: { has_more: false } } : undefined);
+  await assert.rejects(missing.provider.pull(credentials), /missing or invalid movies array/);
+});
+
+test('MDBList rejects cursor loops, contradictory signals, empty continuing pages and missing completion evidence', async () => {
+  for (const response of [
+    { movies: [movie], pagination: {} },
+    { movies: [movie], pagination: { has_more: false, next_cursor: 'secret-cursor' } },
+    { movies: [], pagination: { has_more: true } },
+    { movies: [], pagination: { next_cursor: 'secret-cursor' } },
+    { movies: [movie], pagination: { total: 2, has_more: false } },
+    { movies: [movie], pagination: { total: 1, has_more: true } },
+    { movies: [movie], pagination: { limit: 0, has_more: false } },
+    { movies: [movie], pagination: { total: credentials.token, has_more: false } },
+  ]) {
+    const f = fixture(c => c.path === '/sync/watched' && c.params.get('mediatype') === 'movie' ? response : undefined);
+    await assert.rejects(f.provider.pull(credentials), (error: any) => {
+      assert.match(error.message, /MDBList: movies history page 1:/);
+      assert.equal(error.message.includes('secret-cursor'), false);
+      assert.equal(error.message.includes(credentials.token), false);
+      return true;
+    });
+  }
+  const loop = fixture(c => c.path === '/sync/watched' && c.params.get('mediatype') === 'movie' ? {
+    movies: [{ movie: { ids: { tmdb: c.params.has('cursor') ? 550 : 278 } } }], pagination: { has_more: true, next_cursor: 'same-cursor' },
+  } : undefined);
+  await assert.rejects(loop.provider.pull(credentials), /movies history page 2: repeated history cursor/);
+  assert.equal(loop.calls.filter(c => c.path === '/sync/watched').length, 2);
+});
+
+test('MDBList resolves parent-show IDs nested in episodes for history and playback', async () => {
+  const f = fixture(c => c.path === '/sync/playback' ? [{ ...resume, show: undefined,
+    episode: { season: 0, number: 2, ids: { tmdb: 999999 }, show: episode.show } }] : undefined);
+  const result = await f.provider.pull(credentials);
+  assert.deepEqual(result.watched.episodes, ['tmdb:1396:0:1', 'tt0903747:0:1']);
+  assert.equal(result.items[0].metaId, 'tt0903747');
+  assert.equal(result.items[0].videoId, 'tt0903747:0:2');
+  assert.equal(JSON.stringify(result).includes('999999'), false, 'episode IDs must never become show IDs');
+});
+
+test('MDBList cleanup is idempotent on HTTP 404 but preserves auth and upstream failures', async () => {
+  for (const status of [404, 401, 503]) {
+    const f = fixture(c => c.path === '/scrobble/clear' ? new Response('', { status }) : undefined);
+    const saved = checkpoint();
+    const push = () => f.provider.push(event({ event: 'unplayed' }), 'series', credentials, saved);
+    if (status === 404) { await push(); await push(); assert.equal(f.calls.length, 2); }
+    else await assert.rejects(push(), (error: any) => error.status === status);
+  }
+});
+
 test('MDBList validates complete snapshots and never interprets malformed history or playback as empty', async () => {
   for (const response of [{}, { movies: [] }, page('movies', [], 1), page('movies', [movie], 0), page('movies', [{ movie: {} }])]) {
     const f = fixture(c => c.path === '/sync/watched' && c.params.get('mediatype') === 'movie' ? response : undefined);
@@ -249,9 +341,11 @@ test('MDBList up-next pagination follows offsets and never guesses an episode wh
 });
 
 test('MDBList missing activity markers disable history reuse, and an incomplete initial read cannot prime the cache', async () => {
-  const incomplete = fixture(c => c.path === '/sync/last_activities' ? { watched_at: at } : undefined);
-  await incomplete.provider.pull(credentials); await incomplete.provider.pull(credentials);
-  assert.equal(incomplete.calls.length, 10);
+  for (const activityResponse of [{ watched_at: at }, {}]) {
+    const incomplete = fixture(c => c.path === '/sync/last_activities' ? activityResponse : undefined);
+    await incomplete.provider.pull(credentials); await incomplete.provider.pull(credentials);
+    assert.equal(incomplete.calls.length, 10);
+  }
   let broken = true;
   const f = fixture(c => c.path === '/sync/playback' && broken ? {} : undefined);
   await assert.rejects(f.provider.pull(credentials), /playback list/);
@@ -265,6 +359,34 @@ test('MDBList missing activity markers disable history reuse, and an incomplete 
     if (c.path === '/upnext') return { items: [], has_more: false };
   });
   assert.deepEqual(await empty.provider.pull(credentials), { items: [], watched: { movies: [], episodes: [], counts: {}, nextUp: [] } });
+});
+
+test('MDBList later-page failures preserve the full SQLite snapshot and recovery imports every page', async t => {
+  let changed = false, failed = true;
+  const f = fixture(c => {
+    if (c.path === '/sync/last_activities') return { ...activity, journal_at: changed ? '2026-09-16T12:00:00Z' : at };
+    if (!changed || c.path !== '/sync/watched' || c.params.get('mediatype') !== 'movie') return;
+    if (!c.params.has('cursor')) return { movies: [movie], pagination: { has_more: true, next_cursor: 'second-page' } };
+    if (failed) return new Response('', { status: 503 });
+    return { movies: [{ movie: { ids: { tmdb: 550 } } }], pagination: { has_more: false, next_cursor: null } };
+  });
+  const settings = loadSettings({ GLOBAL_API_KEY: 'a'.repeat(32), ENCRYPTION_KEY: 'b'.repeat(64) });
+  const store = new Store(':memory:', settings.encryptionKey); t.after(() => store.close());
+  const service = new TrackerService(store, settings, { mdblist: f.provider, simkl: f.provider, pmdb: f.provider });
+  const p = store.create({ name: 'MDBList', consent: true, pushProviders: [], pullProvider: 'mdblist' });
+  store.connect(p.id, 'mdblist', credentials);
+  await service.refresh(p);
+  const initial = await service.pull(p, null);
+  const saved = (store.db.prepare('SELECT data FROM snapshots').get() as any).data;
+  changed = true;
+  await assert.rejects(service.refresh(p), /503/);
+  assert.equal((store.db.prepare('SELECT data FROM snapshots').get() as any).data, saved);
+  await assert.rejects(service.pull(p, null), /previous history preserved/);
+  assert.equal(Object.hasOwn(await service.pull(p, initial.version), 'watched'), false);
+  failed = false; await service.refresh(p);
+  const recovered = await service.pull(p, initial.version);
+  assert.deepEqual(recovered.watched?.movies, ['tmdb:278', 'tmdb:550', 'tt0111161']);
+  assert.notEqual(recovered.version, initial.version);
 });
 
 test('MDBList 85% fallback is served locally until a newer external resume replaces it through the service', async t => {

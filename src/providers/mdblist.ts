@@ -40,7 +40,7 @@ function coordinates(row: Json): { season: number; episode: number } {
 }
 function identities(row: Json, type: MediaType): WatchItem[] {
   // Episode IDs belong to the episode, never to its parent show.
-  const bases = aliases(ids(type === 'movie' ? row.movie?.ids : row.show?.ids));
+  const bases = aliases(ids(type === 'movie' ? row.movie?.ids : (row.show ?? row.episode?.show)?.ids));
   if (!bases.length) invalid('missing movie or parent-show identifiers');
   const c = type === 'series' ? coordinates(object(row.episode ?? row, 'episode')) : undefined;
   return bases.map(metaId => ({ type, metaId, videoId: c ? `${metaId}:${c.season}:${c.episode}` : metaId, ...c }));
@@ -88,7 +88,7 @@ export class MdblistProvider implements Provider {
     if (!client) {
       client = new HttpClient('https://api.mdblist.com', {
         fetch: this.fetcher, intervalMs: this.fetcher ? 0 : 100, limiterKey: `mdblist:${credentials.token}`,
-        headers: { 'Content-Type': 'application/json', 'User-Agent': 'AIOSync/1.1.0' },
+        headers: { 'Content-Type': 'application/json', 'User-Agent': 'AIOSync/1.1.1' },
       });
       this.clients.set(credentials.token, client);
     }
@@ -135,8 +135,13 @@ export class MdblistProvider implements Provider {
       // Also invalidate on a resumed checkpoint, before a later cleanup can fail.
       const cache = this.caches.get(credentials.token); if (cache) cache.dirty = true;
       await checkpoint('mdblist:clear', async () => {
-        const result = object(await this.request('/scrobble/clear', credentials, {}, body), 'resume cleanup');
-        if (typeof result.deleted !== 'boolean') invalid('missing resume cleanup confirmation');
+        try {
+          const result = object(await this.request('/scrobble/clear', credentials, {}, body), 'resume cleanup');
+          if (typeof result.deleted !== 'boolean') invalid('missing resume cleanup confirmation');
+        } catch (error) {
+          // An already absent session satisfies this exact-item cleanup.
+          if (!(error instanceof UpstreamError) || error.status !== 404) throw error;
+        }
         return true;
       });
       return;
@@ -164,29 +169,65 @@ export class MdblistProvider implements Provider {
     for (let page = 0; page < 2000; page++) {
       const params: Record<string, string> = { mediatype: type === 'movie' ? 'movie' : 'episode', limit: '1000' };
       if (cursor) params.cursor = cursor; else if (rows.length) params.offset = String(rows.length);
-      const response = object(await this.request('/sync/watched', credentials, params), 'watched history');
-      const pagination = object(response.pagination, 'history pagination');
-      if (!Array.isArray(response[bucket]) || !integer(pagination.total) || !integer(pagination.limit, 1)
-        || response[bucket].length > pagination.limit) invalid('incomplete history pagination');
-      if (total !== undefined && pagination.total !== total) invalid('history changed during pagination; a new full read is required');
-      total = pagination.total;
-      if (!cursor && pagination.offset !== undefined && pagination.offset !== rows.length) invalid('unexpected history offset');
-      for (const entry of response[bucket]) {
+      const context = `${bucket} history page ${page + 1}`;
+      // Never put upstream values, cursors, or request URLs into diagnostics.
+      const fail = (reason: string): never => invalid(`${context}: ${reason}; previous state preserved`);
+      const count = (value: unknown, field: string, min = 0): number | undefined => {
+        if (value === undefined || value === null) return;
+        const n = typeof value === 'string' && /^\d+$/.test(value) ? Number(value) : value;
+        if (!integer(n, min)) fail(`invalid pagination.${field}`);
+        return n as number;
+      };
+      const response = object(await this.request('/sync/watched', credentials, params), context);
+      const pagination = object(response.pagination, `${context} pagination`);
+      // Cursor responses need not contain totals. Older offset responses may
+      // report total_movies/total_episodes instead of one generic total.
+      const totalField = pagination[`total_${bucket}`] != null ? `total_${bucket}` : 'total';
+      const pageTotal = count(pagination[totalField], totalField);
+      const limit = count(pagination.limit, 'limit', 1) ?? 1000;
+      const offset = count(pagination.offset, 'offset');
+      if (pageTotal !== undefined) {
+        if (total !== undefined && pageTotal !== total) fail('history changed during pagination; a new full read is required');
+        total = pageTotal;
+      }
+      const next = pagination.next_cursor;
+      const hasCursor = Object.hasOwn(pagination, 'next_cursor');
+      if (hasCursor && next !== null && typeof next !== 'string') fail('invalid pagination.next_cursor');
+      const hasMore = pagination.has_more;
+      if (hasMore !== undefined && typeof hasMore !== 'boolean') fail('invalid pagination.has_more');
+      if (next && hasMore === false) fail('conflicting pagination continuation signals');
+      if (!cursor && offset !== undefined && offset !== rows.length) fail('unexpected history offset');
+      // Omitted empty buckets are safe only with an explicit zero total.
+      const entries = response[bucket] === undefined && pageTotal === 0 ? [] : response[bucket];
+      if (!Array.isArray(entries)) fail(`missing or invalid ${bucket} array`);
+      if (entries.length > limit) fail('history page exceeds pagination.limit');
+      for (const entry of entries) {
         const candidates = identities(object(entry, 'watched item'), type);
-        if (seen.has(candidates[0]!.videoId)) invalid('duplicate history entry; no partial snapshot returned');
+        if (seen.has(candidates[0]!.videoId)) fail('duplicate history entry; no partial snapshot returned');
         seen.add(candidates[0]!.videoId); rows.push(candidates);
       }
-      if (rows.length > total!) invalid('history exceeds its declared total');
-      const next = pagination.next_cursor;
-      if (rows.length === total) {
-        if (next != null && next !== '') invalid('history cursor continues beyond the declared total');
+      if (total !== undefined && rows.length > total) fail('history exceeds its declared total');
+      if (next) {
+        if (total !== undefined && rows.length === total) fail('history cursor continues beyond the declared total');
+        if (!entries.length) fail('empty intermediate history page');
+        if (cursors.has(next)) fail('repeated history cursor');
+        cursors.add(next); cursor = next;
+        continue;
+      }
+      // Legacy has_more pages continue by offset even when next_cursor is null.
+      const more = hasMore === true || (hasMore === undefined && !hasCursor && total !== undefined && rows.length < total);
+      if (more) {
+        if (total !== undefined && rows.length === total) fail('history continues beyond the declared total');
+        if (!entries.length) fail('empty intermediate history page');
+        cursor = undefined;
+        continue;
+      }
+      if (hasMore === false || hasCursor || total !== undefined && rows.length === total) {
+        if (total !== undefined && rows.length !== total) fail('incomplete history; row count differs from the declared total');
         return rows;
       }
-      if (!response[bucket].length) invalid('empty intermediate history page');
-      if (Object.hasOwn(pagination, 'next_cursor')) {
-        if (typeof next !== 'string' || !next || cursors.has(next)) invalid('incomplete or repeated history cursor');
-        cursors.add(next); cursor = next;
-      } // Older responses without cursors use the documented offset fallback.
+      // A short page alone is not proof that a watched snapshot is complete.
+      fail('missing pagination completion signal (next_cursor, has_more or total)');
     }
     return invalid('history pagination limit exceeded');
   }
@@ -227,7 +268,6 @@ export class MdblistProvider implements Provider {
   }
   private async pullOnce(credentials: Credentials): Promise<Snapshot> {
     const activity = object(await this.request('/sync/last_activities', credentials), 'activity timestamps');
-    if (!ACTIVITY_KEYS.some(k => Object.hasOwn(activity, k))) invalid('missing watched activity timestamps');
     const complete = ACTIVITY_KEYS.every(k => Object.hasOwn(activity, k));
     const signature = complete ? JSON.stringify([...ACTIVITY_KEYS.map(k => timestamp(activity[k])), new Date().toISOString().slice(0, 10)]) : undefined;
     const prior = this.caches.get(credentials.token);
