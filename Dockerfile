@@ -1,5 +1,9 @@
 FROM node:24-bookworm-slim
 
+LABEL org.opencontainers.image.title="AIOSync" \
+      org.opencontainers.image.source="https://github.com/docloulou/AIOSync" \
+      org.opencontainers.image.licenses="MIT"
+
 ENV NODE_ENV=production \
     HOST=0.0.0.0 \
     PORT=7000 \

@@ -1,0 +1,178 @@
+name: Docker release
+
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: docker-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  test:
+    name: Tests and container smoke test
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up Node.js
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: '24'
+          package-manager-cache: false
+
+      - name: Validate release tag
+        if: github.ref_type == 'tag'
+        env:
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: |
+          node --input-type=module <<'NODE'
+          const tag = process.env.RELEASE_TAG;
+          const match = /^v(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:-([0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*))?$/.exec(tag);
+          if (!match || match[4]?.split('.').some(part => /^0\d+$/.test(part))) {
+            throw new Error('Expected vMAJOR.MINOR.PATCH or vMAJOR.MINOR.PATCH-prerelease');
+          }
+          NODE
+
+      - name: Check syntax and run tests
+        run: |
+          npm run check
+          npm test
+
+      - name: Validate Compose definitions
+        env:
+          GLOBAL_API_KEY: ci-placeholder-not-a-production-key
+          ENCRYPTION_KEY: aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+          PUBLIC_BASE_URL: http://localhost:7000
+        run: |
+          docker compose -f compose.ghcr.yaml config --quiet
+          cp .env.example .env
+          docker compose -f compose.yaml config --quiet
+          rm .env
+
+      - name: Build and check the production container
+        run: |
+          bash -n scripts/docker-smoke.sh
+          docker build --pull --tag aiosync:smoke .
+          bash scripts/docker-smoke.sh aiosync:smoke
+
+  publish:
+    name: Publish AMD64 and ARM64 to GHCR
+    needs: test
+    if: github.event_name != 'pull_request' && (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v'))
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set image name
+        id: image
+        env:
+          REPOSITORY: ${{ github.repository }}
+        run: echo "name=ghcr.io/${REPOSITORY,,}" >> "$GITHUB_OUTPUT"
+
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@99012661954931238ded8c8b007157a8430204e1 # v4.4.0
+        with:
+          platforms: arm64
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+
+      - name: Log in to GitHub Container Registry
+        uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Docker tags and labels
+        id: meta
+        uses: docker/metadata-action@dc802804100637a589fabce1cb79ff13a1411302 # v6.2.0
+        with:
+          images: ${{ steps.image.outputs.name }}
+          # latest always follows main; an older release or prerelease cannot move it.
+          flavor: latest=false
+          tags: |
+            type=raw,value=latest,enable=${{ github.ref == 'refs/heads/main' }}
+            type=raw,value=main,enable=${{ github.ref == 'refs/heads/main' }}
+            type=sha,format=long
+            type=ref,event=tag
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+            type=semver,pattern={{major}},enable=${{ !startsWith(github.ref, 'refs/tags/v0.') }}
+          labels: |
+            org.opencontainers.image.title=AIOSync
+            org.opencontainers.image.description=SIMKL and PublicMetaDB watch-state tracker for AIOStreams Jellyfin
+            org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
+            org.opencontainers.image.licenses=MIT
+
+      - name: Build and publish
+        id: build
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+        with:
+          context: .
+          file: ./Dockerfile
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          provenance: mode=min
+          cache-from: type=gha,scope=aiosync-image
+          cache-to: type=gha,scope=aiosync-image,mode=max
+
+      - name: Verify published image index
+        env:
+          IMAGE: ${{ steps.image.outputs.name }}
+          DIGEST: ${{ steps.build.outputs.digest }}
+        run: |
+          docker buildx imagetools inspect "$IMAGE@$DIGEST" --raw > "$RUNNER_TEMP/image-index.json"
+          node --input-type=module <<'NODE'
+          import { readFileSync } from 'node:fs';
+          const index = JSON.parse(readFileSync(`${process.env.RUNNER_TEMP}/image-index.json`, 'utf8'));
+          const platforms = new Set(index.manifests.map(m => `${m.platform?.os}/${m.platform?.architecture}`));
+          for (const target of ['linux/amd64', 'linux/arm64']) {
+            if (!platforms.has(target)) throw new Error(`Published image missing ${target}`);
+          }
+          NODE
+
+      - name: Deployment summary
+        env:
+          IMAGE: ${{ steps.image.outputs.name }}
+          DIGEST: ${{ steps.build.outputs.digest }}
+          TAGS: ${{ steps.meta.outputs.tags }}
+        run: |
+          {
+            echo '## AIOSync image published'
+            echo
+            echo 'Platforms: linux/amd64, linux/arm64'
+            echo
+            echo '### Tags'
+            echo '```text'
+            echo "$TAGS"
+            echo '```'
+            echo
+            echo '### Exact image'
+            echo '```text'
+            echo "$IMAGE@$DIGEST"
+            echo '```'
+            echo
+            echo 'Deploy with compose.ghcr.yaml. Private packages require GHCR authentication.'
+          } >> "$GITHUB_STEP_SUMMARY"

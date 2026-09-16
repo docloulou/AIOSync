@@ -19,7 +19,76 @@ La compatibilité a été étudiée sur le commit AIOStreams **`e3879da60f65c741
 
 Ce n’est pas un fournisseur de films, de séries ou de métadonnées. Il s’installe dans **AIOStreams**, à côté de tes addons habituels. La lecture dans Stremio lui-même ne produit pas les événements Jellyfin utilisés ici.
 
-## Démarrage avec Docker Compose
+## Image Docker prête à déployer (GHCR)
+
+Le workflow [Docker release](https://github.com/docloulou/AIOSync/actions/workflows/docker-publish.yml) teste le code, construit un conteneur de contrôle, puis publie une image **AMD64 et ARM64** :
+
+```text
+ghcr.io/docloulou/aiosync:latest
+```
+
+| Référence | Usage |
+| --- | --- |
+| `latest`, `main` | Dernière publication réussie de la branche `main`. |
+| `sha-<SHA complet du commit>` | Code d’un commit précis. |
+| `1.2.3`, `v1.2.3` | Version publiée lors du push du tag Git `v1.2.3`. |
+| `1.2`, `1` | Alias de la dernière version stable publiée de cette ligne ; aucun alias majeur `0`. |
+| `1.2.3-rc.1`, `v1.2.3-rc.1` | Préversion explicite, sans modifier `latest` ni les alias stables. |
+| `@sha256:…` | Contenu exact de l’image, indiqué dans le résumé du workflow. |
+
+`latest` suit exclusivement `main`. Publier un ancien tag ou une préversion ne déplace donc pas ce tag. Pour une installation figée, utilise une version précise ou le digest plutôt que `latest`. Le tag SHA repère le code ; une reconstruction peut modifier l’image si son image Node de base évolue. Le digest identifie les octets exacts.
+
+### Déployer sans construire
+
+Utilise **`compose.ghcr.yaml`**, fichier autonome sans section `build`. Seuls ce fichier et tes variables d’environnement sont nécessaires sur le serveur ; il n’est pas nécessaire d’y copier les sources.
+
+1. Renseigne `GLOBAL_API_KEY`, `ENCRYPTION_KEY`, `PUBLIC_BASE_URL`, puis les credentials SIMKL/PMDB dans `.env` ou dans les variables de ta stack Dokploy/Dockhand. Les clés doivent respecter le format de `.env.example` ; le générateur décrit plus bas peut les créer.
+2. Configure l’accès au registre si le package est privé, comme expliqué ci-dessous.
+3. Lance :
+
+```bash
+docker compose -f compose.ghcr.yaml pull
+docker compose -f compose.ghcr.yaml up -d
+```
+
+Pour choisir une version, définis par exemple `AIOSYNC_IMAGE=ghcr.io/docloulou/aiosync:1.2.3` dans les variables de la stack **après avoir publié cette version**. Sans cette variable, l’image utilisée est `latest`.
+
+Pour actualiser le déploiement, relance les deux commandes précédentes. Aucune mise à jour automatique des conteneurs déjà démarrés n’est implicite. Pour revenir en arrière, sélectionne l’ancien tag/digest et recrée le service.
+
+Le volume reste nommé `tracker-data` dans les deux fichiers Compose. Pour migrer depuis le build local tout en conservant les données, utilise **le même nom de projet/stack Compose**, le même volume et les mêmes clés. Changer de projet peut créer un nouveau volume vide.
+
+### Accès à GHCR privé
+
+La publication du workflow utilise automatiquement `GITHUB_TOKEN` avec `packages: write` : **aucun PAT ni secret supplémentaire à créer dans GitHub Actions**.
+
+Le package est privé lors de sa première publication. Pour le télécharger depuis ton serveur, crée un **Personal Access Token classique** disposant de `read:packages` et d’un compte autorisé à lire le package, puis exécute :
+
+```bash
+docker login ghcr.io -u docloulou
+```
+
+À la demande de mot de passe, saisis ce token GitHub (pas ton mot de passe GitHub ni la clé globale de l’addon). Il n’est pas à mettre dans les variables d’environnement du conteneur.
+
+Dans **Dokploy/Dockhand**, ajoute un registre `ghcr.io`, utilisateur `docloulou`, mot de passe égal à ce token, puis utilise `compose.ghcr.yaml`. Règle le domaine HTTPS vers le service `tracker`, port interne `7000`. Les indications réseau de la section Dokploy restent applicables. Si tu déploies via ces outils, configure le registre dans l’outil concerné : une connexion Docker effectuée avec un autre utilisateur système ne lui transmet pas forcément les credentials.
+
+Pour autoriser les téléchargements sans authentification, le propriétaire peut choisir **Public** dans les paramètres de visibilité du package GitHub. Ce workflow ne change ni la visibilité du dépôt ni celle du package.
+
+### Publier une version
+
+Chaque push sur `main` lance automatiquement tests, contrôle du conteneur et publication. Pour une version numérotée depuis un checkout du dépôt :
+
+```bash
+git tag v1.0.0
+git push origin v1.0.0
+```
+
+Choisis un nouveau numéro à chaque version ; ne déplace pas un tag déjà distribué. Une GitHub Release peut être créée à partir de ce tag, mais n’est pas nécessaire à la publication de l’image. Les demandes de fusion exécutent les tests et la construction sans accès en écriture au registre. Le bouton **Run workflow** peut relancer `main` ou un tag `v…` ; une branche de développement lancée manuellement n’est pas publiée.
+
+Les actions tierces sont épinglées à des SHA vérifiés. Le workflow vérifie aussi que l’index publié contient bien `linux/amd64` et `linux/arm64`, et écrit les tags/digest dans son résumé. La construction ARM64 est réalisée via QEMU ; le contrôle d’exécution du conteneur tourne en AMD64 sur le runner GitHub.
+
+Sources : [publication Docker avec GitHub Actions](https://docs.github.com/en/actions/tutorials/publish-packages/publish-docker-images), [authentification et visibilité GHCR](https://docs.github.com/en/packages/working-with-a-github-packages-registry/working-with-the-container-registry), [construction multi-plateforme Docker](https://docs.docker.com/build/ci/github-actions/multi-platform/).
+
+## Démarrage avec Docker Compose — build local
 
 Prérequis : Docker, Docker Compose v2 et Node.js 24 pour le petit générateur de configuration. Lance les commandes depuis ce dossier.
 
@@ -75,6 +144,7 @@ Par défaut, le port publié écoute sur `127.0.0.1`. Pour l’ouvrir sur le ré
 | `MAX_WATCHED_MOVIES`, `MAX_WATCHED_EPISODES` | Plafonds d’historique : `50000` chacun. Augmente aussi les limites correspondantes côté AIOStreams. |
 | `HOST`, `PORT`, `DATA_DIR` | Écoute et dossier SQLite en exécution native. Compose impose `0.0.0.0`, `7000`, `/app/data` dans le conteneur. |
 | `HOST_BIND`, `HOST_PORT` | Publication Compose sur l’hôte : `127.0.0.1` et `7000` par défaut. |
+| `AIOSYNC_IMAGE` | Image/tag/digest à utiliser avec `compose.ghcr.yaml`, par défaut `ghcr.io/docloulou/aiosync:latest`. |
 
 Ne remplace pas `ENCRYPTION_KEY` en gardant la même base : les identifiants déjà stockés deviendraient illisibles.
 
