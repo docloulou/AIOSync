@@ -40,7 +40,7 @@ export class Store {
     this.transaction(()=>{
       const existing=this.db.prepare('SELECT secret FROM connections WHERE profile=? AND provider=?').get(profile,provider) as {secret:string}|undefined;
       if(existing&&unseal<Credentials>(existing.secret,this.key).token!==c.token) {
-        throw Object.assign(new Error('Déconnecte d’abord le compte existant avant de changer de jeton'),{status:409});
+        throw Object.assign(new Error('Disconnect the existing account before changing its access token'),{status:409});
       }
       // Stable on same-account reconnect; disconnect/reconnect creates a new generation,
       // even when the same token is supplied again. Old in-flight work cannot commit.

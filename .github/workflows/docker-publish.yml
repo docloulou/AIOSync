@@ -50,13 +50,12 @@ jobs:
           npm run check
           npm test
 
-      - name: Validate Compose definitions
+      - name: Validate Compose definition
         env:
           GLOBAL_API_KEY: ci-placeholder-not-a-production-key
           ENCRYPTION_KEY: aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
           PUBLIC_BASE_URL: http://localhost:7000
         run: |
-          docker compose -f compose.ghcr.yaml config --quiet
           cp .env.example .env
           docker compose -f compose.yaml config --quiet
           rm .env
@@ -173,6 +172,4 @@ jobs:
             echo '```text'
             echo "$IMAGE@$DIGEST"
             echo '```'
-            echo
-            echo 'Deploy with compose.ghcr.yaml. Private packages require GHCR authentication.'
           } >> "$GITHUB_STEP_SUMMARY"

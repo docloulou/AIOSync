@@ -1,76 +1,76 @@
 <!doctype html>
-<html lang="fr">
+<html lang="en">
   <head>
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <meta name="color-scheme" content="dark">
-    <meta name="description" content="Configurez vos profils SIMKL et PMDB pour la synchronisation de l’historique AIOStreams.">
-    <title>Tracker Bridge · SIMKL & PMDB</title>
+    <meta name="description" content="Connect SIMKL and PMDB to sync your watch history and playback progress with AIOStreams.">
+    <title>AIOSync · SIMKL & PMDB</title>
     <link rel="stylesheet" href="/style.css">
     <script src="/app.js" defer></script>
   </head>
   <body>
     <div class="page-shell">
       <header class="site-header">
-        <a class="brand" href="/" aria-label="Tracker Bridge, accueil">
+        <a class="brand" href="/" aria-label="AIOSync home">
           <span class="brand-mark" aria-hidden="true">↔</span>
-          <span>Tracker<span class="brand-light">Bridge</span></span>
+          <span>AIO<span class="brand-light">Sync</span></span>
         </a>
         <div class="header-actions">
           <span class="header-caption">SIMKL + PMDB</span>
-          <button class="button button-quiet" id="logout" type="button" hidden>Déconnexion</button>
+          <button class="button button-quiet" id="logout" type="button" hidden>Sign out</button>
         </div>
       </header>
 
       <main>
         <div id="message" class="message" role="alert" tabindex="-1" hidden></div>
-        <div id="loading" class="initial-loading" role="status">Chargement de la configuration…</div>
+        <div id="loading" class="initial-loading" role="status">Loading settings…</div>
 
         <section id="login-view" class="login-layout" aria-labelledby="login-title" hidden>
           <div class="login-intro">
-            <p class="eyebrow"><span class="status-dot" aria-hidden="true"></span> L’HISTORIQUE, CONNECTÉ</p>
-            <h1 id="login-title">Vos comptes.<br>Votre historique.<br><span class="accent">Un seul pont.</span></h1>
-            <p class="lead">Reliez SIMKL et PMDB à AIOStreams pour retrouver vos lectures et synchroniser votre progression depuis Jellyfin.</p>
-            <div class="capabilities" aria-label="Fonctionnalités">
-              <span>↓ Récupération</span><span>↑ Envoi</span><span>∞ Profils</span>
+            <p class="eyebrow"><span class="status-dot" aria-hidden="true"></span> YOUR WATCH HISTORY, CONNECTED</p>
+            <h1 id="login-title">Your accounts.<br>Your watch history.<br><span class="accent">Connected.</span></h1>
+            <p class="lead">Connect SIMKL and PMDB to AIOStreams to keep your watch history and Jellyfin playback progress in sync.</p>
+            <div class="capabilities" aria-label="Features">
+              <span>↓ Pull</span><span>↑ Push</span><span>∞ Profiles</span>
             </div>
           </div>
           <div class="panel login-panel">
-            <span class="section-number" aria-hidden="true">01 / ACCÈS</span>
-            <h2>Ouvrir la configuration</h2>
-            <p>Utilisez la clé API globale définie sur votre serveur.</p>
+            <span class="section-number" aria-hidden="true">01 / ACCESS</span>
+            <h2>Manage your profiles</h2>
+            <p>Sign in with the global API key configured on your server.</p>
             <form id="login-form">
               <label class="field">
-                <span>Clé API globale</span>
-                <input id="api-key" name="apiKey" type="password" autocomplete="current-password" required placeholder="Votre clé API" spellcheck="false">
+                <span>Global API key</span>
+                <input id="api-key" name="apiKey" type="password" autocomplete="current-password" required placeholder="Your API key" spellcheck="false">
               </label>
-              <button class="button button-primary button-full" type="submit">Se connecter <span aria-hidden="true">→</span></button>
+              <button class="button button-primary button-full" type="submit">Sign in <span aria-hidden="true">→</span></button>
             </form>
-            <p class="fine-print">Cette clé donne accès à tous les profils. Chaque profil dispose de sa propre URL d’addon.</p>
+            <p class="fine-print">This key gives access to all profiles. Each profile has its own addon URL.</p>
           </div>
         </section>
 
         <section id="dashboard" aria-labelledby="dashboard-title" hidden>
           <div class="dashboard-heading">
             <div>
-              <p class="eyebrow">VOTRE PASSERELLE DE SUIVI</p>
-              <h1 id="dashboard-title">Configurations</h1>
-              <p class="lead">Un profil par utilisateur ou combinaison de comptes.</p>
+              <p class="eyebrow">YOUR WATCH HISTORY BRIDGE</p>
+              <h1 id="dashboard-title">Profiles</h1>
+              <p class="lead">One profile per user or combination of accounts.</p>
             </div>
-            <button class="button button-secondary" id="reload" type="button"><span aria-hidden="true">↻</span> Actualiser</button>
+            <button class="button button-secondary" id="reload" type="button"><span aria-hidden="true">↻</span> Refresh</button>
           </div>
 
           <aside class="info-strip">
             <span class="info-symbol" aria-hidden="true">i</span>
-            <p>Choisissez <strong>une source de récupération</strong> et <strong>une ou plusieurs destinations d’envoi</strong>. Partagez uniquement l’URL du profil avec AIOStreams ; conservez la clé globale pour vous.</p>
+            <p>Choose <strong>one pull source</strong> and <strong>one or more push destinations</strong>. Use the profile URL in AIOStreams and keep your global API key private.</p>
           </aside>
 
           <section class="panel create-panel" aria-labelledby="create-title">
-            <div><h2 id="create-title">Nouveau profil</h2><p>Connectez des comptes indépendants dans chaque profil.</p></div>
+            <div><h2 id="create-title">New profile</h2><p>Connect a separate set of accounts for each profile.</p></div>
             <form id="create-form" class="create-form">
-              <label class="sr-only" for="profile-name">Nom du nouveau profil</label>
-              <input id="profile-name" name="name" type="text" maxlength="100" required placeholder="Ex. Lucas · Salon" autocomplete="off">
-              <button class="button button-primary" type="submit"><span aria-hidden="true">+</span> Créer un profil</button>
+              <label class="sr-only" for="profile-name">New profile name</label>
+              <input id="profile-name" name="name" type="text" maxlength="100" required placeholder="e.g. Living room" autocomplete="off">
+              <button class="button button-primary" type="submit"><span aria-hidden="true">+</span> Create profile</button>
             </form>
           </section>
 
@@ -78,8 +78,8 @@
         </section>
       </main>
 
-      <footer class="site-footer"><span>Tracker Bridge</span><span>Ressource watch-state · AIOStreams / Jellyfin</span></footer>
+      <footer class="site-footer"><span>AIOSync</span><span>Watch-state sync · AIOStreams / Jellyfin</span></footer>
     </div>
-    <noscript>Activez JavaScript pour configurer les connexions et les profils.</noscript>
+    <noscript>Enable JavaScript to configure connections and profiles.</noscript>
   </body>
 </html>

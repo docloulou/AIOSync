@@ -11,7 +11,7 @@ function invalid(message: string): never {
   throw new UpstreamError(`PublicMetaDB: ${message}`, 502);
 }
 function object(value: unknown, context: string): ObjectValue {
-  if (!value || typeof value !== 'object' || Array.isArray(value)) invalid(`${context}: objet attendu`);
+  if (!value || typeof value !== 'object' || Array.isArray(value)) invalid(`${context}: expected an object`);
   return value as ObjectValue;
 }
 function integer(value: unknown, minimum: number): value is number {
@@ -23,46 +23,46 @@ function numericId(value: unknown): number | undefined {
   return undefined;
 }
 function date(value: unknown, context: string): string {
-  if (typeof value !== 'string' || !Number.isFinite(Date.parse(value))) invalid(`${context}: date invalide`);
+  if (typeof value !== 'string' || !Number.isFinite(Date.parse(value))) invalid(`${context}: invalid date`);
   return value as string;
 }
 function rowTarget(raw: ObjectValue, context: string): Target {
-  if (!integer(raw.tmdb_id, 1) || (raw.media_type !== 'movie' && raw.media_type !== 'tv')) invalid(`${context}: identité invalide`);
+  if (!integer(raw.tmdb_id, 1) || (raw.media_type !== 'movie' && raw.media_type !== 'tv')) invalid(`${context}: invalid media identity`);
   const result: Target = { tmdb_id: raw.tmdb_id as number, media_type: raw.media_type as Target['media_type'] };
   if (result.media_type === 'tv') {
-    if (!integer(raw.season, 0) || !integer(raw.episode, 1)) invalid(`${context}: numérotation épisode invalide`);
+    if (!integer(raw.season, 0) || !integer(raw.episode, 1)) invalid(`${context}: invalid episode numbering`);
     result.season = raw.season as number;
     result.episode = raw.episode as number;
   }
   return result;
 }
 function historyRow(value: unknown): HistoryRow {
-  const raw = object(value, 'historique');
-  if (typeof raw.id !== 'string' || !raw.id) invalid('historique: identifiant de ligne manquant');
-  if (raw.watched_at !== null) date(raw.watched_at, 'historique');
-  return { ...rowTarget(raw, 'historique'), id: raw.id as string, watched_at: raw.watched_at as string | null };
+  const raw = object(value, 'history');
+  if (typeof raw.id !== 'string' || !raw.id) invalid('history: missing row ID');
+  if (raw.watched_at !== null) date(raw.watched_at, 'history');
+  return { ...rowTarget(raw, 'history'), id: raw.id as string, watched_at: raw.watched_at as string | null };
 }
 function resumeRow(value: unknown): ResumeRow {
-  const raw = object(value, 'reprise');
-  if (typeof raw.id !== 'string' || !raw.id) invalid('reprise: identifiant de ligne manquant');
-  if (!integer(raw.position_ms, 0) || !integer(raw.runtime_ms, 1) || raw.position_ms > raw.runtime_ms) invalid('reprise: durée ou position invalide');
+  const raw = object(value, 'resume');
+  if (typeof raw.id !== 'string' || !raw.id) invalid('resume: missing row ID');
+  if (!integer(raw.position_ms, 0) || !integer(raw.runtime_ms, 1) || raw.position_ms > raw.runtime_ms) invalid('resume: invalid duration or position');
   const result: ResumeRow = {
-    ...rowTarget(raw, 'reprise'), id: raw.id as string,
+    ...rowTarget(raw, 'resume'), id: raw.id as string,
     position_ms: raw.position_ms as number, runtime_ms: raw.runtime_ms as number,
   };
-  if (raw.updated != null) result.updated = date(raw.updated, 'reprise.updated');
-  if (raw.created != null) result.created = date(raw.created, 'reprise.created');
+  if (raw.updated != null) result.updated = date(raw.updated, 'resume.updated');
+  if (raw.created != null) result.created = date(raw.created, 'resume.created');
   return result;
 }
 function page<T>(value: unknown, requestedPage: number, parseRow: (row: unknown) => T): Page<T> {
   const raw = object(value, 'pagination');
   if (!Array.isArray(raw.items) || !integer(raw.total, 0) || !integer(raw.totalPages, 0)
-    || !integer(raw.perPage, 1) || raw.perPage > 500 || raw.page !== requestedPage) invalid('pagination incomplète ou invalide');
+    || !integer(raw.perPage, 1) || raw.perPage > 500 || raw.page !== requestedPage) invalid('incomplete or invalid pagination');
   const total = raw.total as number;
   const perPage = raw.perPage as number;
   const totalPages = raw.totalPages as number;
-  if (total === 0 ? (totalPages !== 0 && totalPages !== 1) : totalPages !== Math.ceil(total / perPage)) invalid('pagination incohérente');
-  if ((raw.items as unknown[]).length > perPage) invalid('page trop longue');
+  if (total === 0 ? (totalPages !== 0 && totalPages !== 1) : totalPages !== Math.ceil(total / perPage)) invalid('inconsistent pagination');
+  if ((raw.items as unknown[]).length > perPage) invalid('page exceeds its declared size');
   return { items: (raw.items as unknown[]).map(parseRow), total, totalPages, page: requestedPage, perPage };
 }
 function identity(target: Target): { metaId: string; videoId: string } {
@@ -83,7 +83,7 @@ function targetParams(target: Target): URLSearchParams {
 }
 function successful(value: unknown, context: string): ObjectValue {
   const raw = object(value, context);
-  if (raw.success !== true) invalid(`${context}: confirmation de succès absente`);
+  if (raw.success !== true) invalid(`${context}: missing success confirmation`);
   return raw;
 }
 
@@ -99,7 +99,7 @@ export class PmdbProvider implements Provider {
   }
 
   private request(path: string, credentials: Credentials, init: RequestInit = {}): Promise<unknown> {
-    if (!credentials.token?.trim()) throw new UpstreamError('Clé API PublicMetaDB manquante', 401);
+    if (!credentials.token?.trim()) throw new UpstreamError('Missing PublicMetaDB API key', 401);
     const headers = new Headers(init.headers);
     headers.set('Authorization', `Bearer ${credentials.token}`);
     if (init.body != null) headers.set('Content-Type', 'application/json');
@@ -121,50 +121,50 @@ export class PmdbProvider implements Provider {
       const result = page(await this.request(`${path.split('?')[0]}?${params}`, credentials), index, parseRow);
       first ??= result;
       if (result.total !== first.total || result.totalPages !== first.totalPages || result.perPage !== first.perPage) {
-        invalid('la collection a changé pendant la pagination; une nouvelle lecture complète est nécessaire');
+        invalid('the collection changed during pagination; a new full read is required');
       }
       for (const row of result.items) {
-        if (seen.has(row.id)) invalid('ligne dupliquée entre pages; instantané incomplet');
+        if (seen.has(row.id)) invalid('duplicate row across pages; incomplete snapshot');
         seen.add(row.id);
         rows.push(row);
       }
       if (index >= result.totalPages) {
-        if (rows.length !== result.total) invalid('nombre de lignes différent du total annoncé');
+        if (rows.length !== result.total) invalid('row count differs from the reported total');
         return rows;
       }
-      if (result.items.length !== result.perPage) invalid('page intermédiaire incomplète');
+      if (result.items.length !== result.perPage) invalid('incomplete intermediate page');
     }
-    return invalid('limite de pagination dépassée; aucun instantané partiel retourné');
+    return invalid('pagination limit exceeded; no partial snapshot returned');
   }
 
   private async resolve(event: WatchEvent, type: MediaType, credentials: Credentials): Promise<Target> {
-    if (event.videos || event.scope === 'season' || event.scope === 'series') throw new UpstreamError('Le lot PMDB doit être réparti en vidéos individuelles', 422);
+    if (event.videos || event.scope === 'season' || event.scope === 'series') throw new UpstreamError('PMDB batches must be split into individual videos', 422);
     if (type === 'series' && (event.season === null || !integer(event.season, 0) || !integer(event.episode, 1))) {
-      throw new UpstreamError('PublicMetaDB exige une saison et un épisode explicites; numérotation absolue non convertible sans correspondance vérifiée', 422);
+      throw new UpstreamError('PublicMetaDB requires an explicit season and episode; absolute numbering needs a verified mapping', 422);
     }
     if (type === 'series' && /^(?:kitsu|mal|anilist|anidb|simkl):/.test(event.metaId)) {
-      throw new UpstreamError('La numérotation de cette métadonnée anime ne peut pas être supposée identique à TMDB', 422);
+      throw new UpstreamError('This anime metadata numbering cannot be assumed to match TMDB', 422);
     }
     if (type === 'series' && /^(?:kitsu|mal|anilist|anidb|simkl):/.test(event.videoId ?? '')) {
-      throw new UpstreamError('La numérotation de cette vidéo anime nécessite une correspondance explicite vers les épisodes TMDB', 422);
+      throw new UpstreamError('This anime video numbering requires an explicit mapping to TMDB episodes', 422);
     }
     const media_type = type === 'movie' ? 'movie' : 'tv';
     let tmdb_id = numericId(event.ids?.tmdb);
-    if (event.ids?.tmdb != null && !tmdb_id) throw new UpstreamError('Identifiant TMDB invalide', 422);
+    if (event.ids?.tmdb != null && !tmdb_id) throw new UpstreamError('Invalid TMDB ID', 422);
     if (!tmdb_id && /^tmdb:[1-9]\d*$/.test(event.metaId)) tmdb_id = numericId(event.metaId.slice(5));
     if (!tmdb_id) {
       const imdb = event.ids?.imdb ?? (/^tt\d+$/.test(event.metaId) ? event.metaId : undefined);
-      if (!imdb || !/^tt\d+$/.test(imdb)) throw new UpstreamError('PublicMetaDB: aucun identifiant TMDB ou IMDb exploitable', 422);
+      if (!imdb || !/^tt\d+$/.test(imdb)) throw new UpstreamError('PublicMetaDB: no usable TMDB or IMDb ID', 422);
       const params = new URLSearchParams({ id_type: 'imdb', id_value: imdb, media_type });
-      const raw = object(await this.request(`/api/external/mappings/lookup?${params}`, credentials), 'correspondance IMDb');
-      if (!Array.isArray(raw.results) || !integer(raw.total, 0) || raw.total !== raw.results.length) invalid('correspondance IMDb incomplète');
+      const raw = object(await this.request(`/api/external/mappings/lookup?${params}`, credentials), 'IMDb mapping');
+      if (!Array.isArray(raw.results) || !integer(raw.total, 0) || raw.total !== raw.results.length) invalid('incomplete IMDb mapping');
       const candidates = new Set<number>();
       for (const value of raw.results) {
-        const candidate = object(value, 'correspondance IMDb');
-        if (!integer(candidate.tmdb_id, 1) || (candidate.media_type !== 'movie' && candidate.media_type !== 'tv')) invalid('correspondance IMDb invalide');
+        const candidate = object(value, 'IMDb mapping');
+        if (!integer(candidate.tmdb_id, 1) || (candidate.media_type !== 'movie' && candidate.media_type !== 'tv')) invalid('invalid IMDb mapping');
         if (candidate.media_type === media_type) candidates.add(candidate.tmdb_id as number);
       }
-      if (candidates.size !== 1) throw new UpstreamError(candidates.size ? 'Correspondance IMDb vers TMDB ambiguë' : 'Aucune correspondance IMDb vers TMDB dans PublicMetaDB', 422);
+      if (candidates.size !== 1) throw new UpstreamError(candidates.size ? 'Ambiguous IMDb to TMDB mapping' : 'No IMDb to TMDB mapping in PublicMetaDB', 422);
       tmdb_id = [...candidates][0];
     }
     return type === 'movie' ? { tmdb_id: tmdb_id!, media_type } : { tmdb_id: tmdb_id!, media_type, season: event.season!, episode: event.episode! };
@@ -173,10 +173,10 @@ export class PmdbProvider implements Provider {
   private async clearResume(target: Target, credentials: Credentials, checkpoint: Checkpoint): Promise<void> {
     const rows = await checkpoint('pmdb:resume-list', () => this.all(`/api/external/resume?${targetParams(target)}`, credentials, resumeRow));
     for (const row of rows) {
-      if (!matches(row, target)) invalid('la réponse filtrée contient une autre vidéo; suppression interrompue');
+      if (!matches(row, target)) invalid('the filtered response contains another video; deletion aborted');
       await checkpoint(`pmdb:resume-delete:${row.id}`, async () => {
         try {
-          successful(await this.request(`/api/external/resume/${encodeURIComponent(row.id)}`, credentials, { method: 'DELETE' }), 'suppression de reprise');
+          successful(await this.request(`/api/external/resume/${encodeURIComponent(row.id)}`, credentials, { method: 'DELETE' }), 'resume deletion');
         } catch (error) {
           // A replay after the remote delete but before the local checkpoint is harmless.
           if (!(error instanceof UpstreamError) || error.status !== 404) throw error;
@@ -188,48 +188,44 @@ export class PmdbProvider implements Provider {
 
   async push(event: WatchEvent, type: MediaType, credentials: Credentials, checkpoint: Checkpoint): Promise<PushResult> {
     const target = await checkpoint('pmdb:target', () => this.resolve(event, type, credentials));
-    if (event.event === 'start') {
-      await this.clearResume(target, credentials, checkpoint);
-      return;
-    }
     if (event.event === 'unplayed') {
       await checkpoint('pmdb:unplayed', async () => {
-        const raw = successful(await this.request(`/api/external/watched?${targetParams(target)}`, credentials, { method: 'DELETE' }), 'suppression historique');
-        if (!integer(raw.deleted, 0)) invalid('suppression historique: compteur invalide');
+        const raw = successful(await this.request(`/api/external/watched?${targetParams(target)}`, credentials, { method: 'DELETE' }), 'history deletion');
+        if (!integer(raw.deleted, 0)) invalid('history deletion: invalid count');
         return true;
       });
       await this.clearResume(target, credentials, checkpoint);
       return;
     }
     if (event.event === 'played' || (event.event === 'stop' && event.played === true)) {
-      if (!Number.isFinite(event.at) || event.at < 0 || !Number.isFinite(new Date(event.at * 1000).getTime())) throw new UpstreamError('Date de lecture invalide', 422);
+      if (!Number.isFinite(event.at) || event.at < 0 || !Number.isFinite(new Date(event.at * 1000).getTime())) throw new UpstreamError('Invalid playback timestamp', 422);
       await checkpoint('pmdb:played', async () => {
         successful(await this.request('/api/external/watched?dedupe=true', credentials, {
           method: 'POST', body: JSON.stringify({ ...target, watched_at: new Date(event.at * 1000).toISOString() }),
-        }), 'enregistrement historique');
+        }), 'history write');
         return true;
       });
       await this.clearResume(target, credentials, checkpoint);
       return;
     }
-    if (event.event !== 'pause' && event.event !== 'stop') throw new UpstreamError('Événement PMDB non reconnu', 422);
+    if (event.event !== 'start' && event.event !== 'pause' && event.event !== 'stop') throw new UpstreamError('Unrecognized PMDB event', 422);
+    // Transient start/seek payloads must not delete a usable remote resume.
+    // Only explicit played/unplayed actions above clear it.
     if (!integer(event.positionMs, 0) || !integer(event.durationMs, 1) || event.positionMs > event.durationMs) {
-      await this.clearResume(target, credentials, checkpoint);
-      return { localOnly: true, warning: 'Reprise conservée localement : durée/position absente ou invalide pour PublicMetaDB.' };
+      return { localOnly: true, warning: 'Playback event kept locally: missing or invalid duration/position for PublicMetaDB. Existing remote resume preserved.' };
     }
     const progress = event.positionMs / event.durationMs * 100;
     if (progress < 2 || progress >= 80) {
-      await this.clearResume(target, credentials, checkpoint);
-      return { localOnly: true, warning: 'Reprise conservée localement : PublicMetaDB ne conserve que les progressions de 2 % inclus à 80 % exclus.' };
+      return { localOnly: true, warning: 'Resume kept locally: PublicMetaDB only saves progress from 2% inclusive to 80% exclusive. Existing remote resume preserved.' };
     }
     await checkpoint('pmdb:resume-save', async () => {
       const raw = object(await this.request('/api/external/resume', credentials, {
         method: 'POST', body: JSON.stringify({ ...target, position_ms: event.positionMs, runtime_ms: event.durationMs }),
-      }), 'enregistrement reprise');
-      if (raw.action !== 'saved') invalid('enregistrement reprise: confirmation saved absente');
-      const item = object(raw.item, 'enregistrement reprise.item');
-      if (!matches(rowTarget(item, 'enregistrement reprise'), target) || item.position_ms !== event.positionMs || item.runtime_ms !== event.durationMs) {
-        invalid('enregistrement reprise: vidéo ou position différente');
+      }), 'resume write');
+      if (raw.action !== 'saved') invalid('resume write: missing saved confirmation');
+      const item = object(raw.item, 'resume write.item');
+      if (!matches(rowTarget(item, 'resume write'), target) || item.position_ms !== event.positionMs || item.runtime_ms !== event.durationMs) {
+        invalid('resume write: different video or position');
       }
       return true;
     });

@@ -79,7 +79,7 @@ test('Simkl respects native video ID space when parent metadata is IMDb', async 
   assert.deepEqual(f.calls[0]!.body.shows[0].ids, { kitsu: '42323' });
   assert.equal(f.calls[0]!.body.shows[0].seasons, undefined);
   assert.equal(f.calls[0]!.body.shows[0].episodes[0].number, 7);
-  await assert.rejects(f.provider.push({ ...base, season: null }, 'series', f.credentials, checkpoint()), /absolu sans identifiant/);
+  await assert.rejects(f.provider.push({ ...base, season: null }, 'series', f.credentials, checkpoint()), /absolute episode without an anime identifier/);
 });
 
 test('Simkl unplayed clears only matching saved resume and retry checkpoints avoid repeating history', async () => {
@@ -105,7 +105,7 @@ test('Simkl unplayed clears only matching saved resume and retry checkpoints avo
 
 test('Simkl does not report success for provider not_found', async () => {
   const f = fixture(() => ({ added: { episodes: 0 }, not_found: { shows: [{ ids: { imdb: 'tt0903747' } }] } }));
-  await assert.rejects(f.provider.push({ ...base, event: 'played' }, 'series', f.credentials, checkpoint()), (error: unknown) => error instanceof UpstreamError && error.status === 422 && /non reconnu/.test(error.message));
+  await assert.rejects(f.provider.push({ ...base, event: 'played' }, 'series', f.credentials, checkpoint()), (error: unknown) => error instanceof UpstreamError && error.status === 422 && /unrecognized/.test(error.message));
 });
 
 test('Simkl partial bulk not_found returns saved diagnostics without replaying successful writes', async () => {

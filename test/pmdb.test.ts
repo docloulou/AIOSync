@@ -75,16 +75,16 @@ test('PMDB refuses incomplete, malformed or changing snapshots instead of replac
   const { provider } = fixture(({ path }) => path.includes('/watched') ? list([movie]) : { items: 'invalid' });
   await assert.rejects(provider.pull(credentials), /pagination/);
   const changing = fixture(({ path }) => path.includes('page=1') ? list([movie], 2, 1, 1) : list([episode], 3, 2, 1));
-  await assert.rejects(changing.provider.pull(credentials), /changé pendant/);
+  await assert.rejects(changing.provider.pull(credentials), /changed during/);
   const duplicate = fixture(({ path }) => list([movie], 2, path.includes('page=1') ? 1 : 2, 1));
-  await assert.rejects(duplicate.provider.pull(credentials), /dupliquée/);
+  await assert.rejects(duplicate.provider.pull(credentials), /duplicate/);
 });
 
 test('PMDB validates credentials with a minimal authenticated read', async () => {
   const { provider, calls } = fixture(() => list([], 0, 1, 1));
   await provider.validate(credentials);
   assert.equal(calls[0].path, '/api/external/watched?page=1&perPage=1');
-  await assert.rejects(provider.validate({ token: '' }), /Clé API/);
+  await assert.rejects(provider.validate({ token: '' }), /API key/);
 });
 
 test('PMDB marks a special watched with the event time and checkpoints prevent replay writes', async () => {
@@ -101,7 +101,7 @@ test('PMDB marks a special watched with the event time and checkpoints prevent r
 test('PMDB resolves IMDb only through exact mapping and rejects ambiguity or missing maps', async () => {
   for (const results of [[], [{ tmdb_id: 550, media_type: 'movie' }, { tmdb_id: 551, media_type: 'movie' }]]) {
     const { provider, calls } = fixture(() => ({ results, total: results.length }));
-    await assert.rejects(provider.push(event({ metaId: 'tt0137523' }), 'movie', credentials, checkpoint()), /correspondance|Correspondance/);
+    await assert.rejects(provider.push(event({ metaId: 'tt0137523' }), 'movie', credentials, checkpoint()), /mapping/);
     assert.equal(calls.length, 1);
   }
   const { provider, calls } = fixture(({ path, method }) => {
@@ -113,12 +113,20 @@ test('PMDB resolves IMDb only through exact mapping and rejects ambiguity or mis
   assert.equal(calls.find(call => call.method === 'POST')!.body.tmdb_id, 550);
 });
 
-test('PMDB saves partial pause with actual milliseconds and never invents runtime', async () => {
-  const { provider, calls } = fixture(({ body }) => ({ action: 'saved', item: { ...body, id: 'new-resume' } }));
-  await provider.push(event({ event: 'pause', positionMs: 1800, durationMs: 6000 }), 'series', credentials, checkpoint());
-  assert.equal(calls[0].path, '/api/external/resume');
-  assert.equal(calls[0].body.position_ms, 1800);
-  assert.equal(calls[0].body.runtime_ms, 6000);
+test('PMDB saves supported start, pause and incomplete stop positions with actual milliseconds', async () => {
+  for (const action of ['start', 'pause', 'stop'] as const) {
+    for (const positionMs of [120, 1800, 4799]) {
+      const { provider, calls } = fixture(({ body }) => ({ action: 'saved', item: { ...body, id: 'new-resume' } }));
+      const saved = checkpoint();
+      const value = event({ event: action, played: false, positionMs, durationMs: 6000 });
+      await provider.push(value, 'series', credentials, saved);
+      await provider.push(value, 'series', credentials, saved);
+      assert.equal(calls.length, 1, 'checkpointed retries must not repeat writes');
+      assert.equal(calls[0].method, 'POST');
+      assert.equal(calls[0].path, '/api/external/resume');
+      assert.deepEqual(calls[0].body, { tmdb_id: 1399, media_type: 'tv', season: 0, episode: 1, position_ms: positionMs, runtime_ms: 6000 });
+    }
+  }
 });
 
 test('PMDB stop follows the explicit played flag instead of inventing a watched threshold', async () => {
@@ -128,31 +136,44 @@ test('PMDB stop follows the explicit played flag instead of inventing a watched 
   assert.equal(calls.filter(call => call.method === 'POST').length, 1);
 });
 
-test('PMDB preserves unsupported progress locally and removes stale remote resume without marking watched', async () => {
-  for (const values of [
-    { positionMs: 1, durationMs: 100 }, { positionMs: 80, durationMs: 100 },
-    { positionMs: 89, durationMs: 100 }, { positionMs: 2000 },
-  ]) {
-    const { provider, calls } = fixture(({ method }) => method === 'GET' ? list([{ ...resume, episode: 1 }]) : { success: true });
-    const result = await provider.push(event({ event: 'stop', played: false, ...values }), 'series', credentials, checkpoint());
-    assert.equal(result?.localOnly, true);
-    assert.equal(calls.filter(call => call.method === 'POST').length, 0);
-    assert.equal(calls.at(-1)?.path, '/api/external/resume/resume-1');
-    assert.equal(calls.at(-1)?.method, 'DELETE');
+test('PMDB preserves remote resume for missing, invalid and unsupported start/seek positions', async () => {
+  for (const action of ['start', 'pause', 'stop'] as const) {
+    for (const values of [
+      {}, { positionMs: 0, durationMs: 100 }, { positionMs: 1, durationMs: 100 },
+      { positionMs: 80, durationMs: 100 }, { positionMs: 89, durationMs: 100 },
+      { positionMs: 100, durationMs: 100 }, { positionMs: 2000 }, { durationMs: 6000 },
+      { positionMs: -1, durationMs: 100 }, { positionMs: 30, durationMs: 0 },
+      { positionMs: 101, durationMs: 100 }, { positionMs: NaN, durationMs: 100 },
+      { positionMs: 30, durationMs: Infinity },
+    ]) {
+      const { provider, calls } = fixture(() => { throw new Error('Unsupported playback points must not modify the remote resume'); });
+      const result = await provider.push(event({ event: action, played: false, ...values }), 'series', credentials, checkpoint());
+      assert.equal(result?.localOnly, true);
+      assert.match(result?.warning ?? '', /Existing remote resume preserved/);
+      assert.equal(calls.length, 0);
+    }
   }
 });
 
-test('PMDB start clears the exact resume and unplayed deletes only the exact episode history', async () => {
-  for (const action of ['start', 'unplayed'] as const) {
+test('PMDB explicit watched and unwatched actions still clear only the exact episode resume', async () => {
+  for (const value of [event(), event({ event: 'stop', played: true }), event({ event: 'unplayed' })]) {
     const { provider, calls } = fixture(({ method, path }) => {
       if (method === 'GET') return list([{ ...resume, episode: 1 }]);
       if (path.startsWith('/api/external/watched')) return { success: true, deleted: 2 };
       return { success: true };
     });
-    await provider.push(event({ event: action }), 'series', credentials, checkpoint());
+    await provider.push(value, 'series', credentials, checkpoint());
+    assert.equal(calls.length, 3);
+    assert.equal(calls[1].path, '/api/external/resume?tmdb_id=1399&media_type=tv&season=0&episode=1&page=1&perPage=500');
     assert.equal(calls.at(-1)?.path, '/api/external/resume/resume-1');
-    if (action === 'unplayed') assert.equal(calls[0].path, '/api/external/watched?tmdb_id=1399&media_type=tv&season=0&episode=1');
-    else assert.ok(calls.every(call => !call.path.includes('/watched')));
+    assert.equal(calls.at(-1)?.method, 'DELETE');
+    if (value.event === 'unplayed') {
+      assert.equal(calls[0].path, '/api/external/watched?tmdb_id=1399&media_type=tv&season=0&episode=1');
+      assert.equal(calls[0].method, 'DELETE');
+    } else {
+      assert.equal(calls[0].path, '/api/external/watched?dedupe=true');
+      assert.equal(calls[0].method, 'POST');
+    }
   }
 });
 
@@ -165,9 +186,9 @@ test('PMDB rejects absolute or anime numbering and unsplit bulk before making up
 });
 
 test('PMDB refuses to delete a different episode if upstream ignores resume filters', async () => {
-  const { provider, calls } = fixture(() => list([resume]));
-  await assert.rejects(provider.push(event({ event: 'start' }), 'series', credentials, checkpoint()), /autre vidéo/);
-  assert.ok(calls.every(call => call.method === 'GET'));
+  const { provider, calls } = fixture(({ method }) => method === 'POST' ? { success: true } : list([resume]));
+  await assert.rejects(provider.push(event({ event: 'played' }), 'series', credentials, checkpoint()), /another video/);
+  assert.equal(calls.filter(call => call.method === 'DELETE').length, 0);
 });
 
 test('PMDB does not accept a successful HTTP response without the expected write confirmation', async () => {

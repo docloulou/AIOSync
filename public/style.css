@@ -6,3 +6,5 @@
 @media(prefers-reduced-motion:reduce){*{transition:none!important;scroll-behavior:auto!important}}
 
 .jobs-details{margin:0 26px 23px;border-top:1px solid var(--line);padding-top:16px;font-size:.76rem}.jobs-details summary{cursor:pointer;color:#c5d6e8;font-weight:600}.jobs-details summary:focus-visible{outline:3px solid var(--accent);outline-offset:4px}.jobs-content{padding-top:15px}.jobs-list{list-style:none;padding:0;margin:0 0 14px;max-height:360px;overflow:auto}.jobs-list li{border-bottom:1px solid var(--line);padding:12px 0}.job-heading{display:flex;gap:12px;align-items:center;justify-content:space-between}.job-heading strong{font-weight:600}.jobs-list p{margin:5px 0 0;font-size:.71rem}.jobs-list .hint{margin-bottom:0}@media(max-width:620px){.jobs-details{margin-left:18px;margin-right:18px}}
+
+.job-meta{overflow-wrap:anywhere}

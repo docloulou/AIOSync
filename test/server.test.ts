@@ -19,7 +19,7 @@ class FakeProvider implements Provider {
   constructor(name: ProviderName) { this.name = name; }
   async validate(credentials: Credentials) {
     this.validations.push(credentials.token);
-    if (credentials.token.startsWith('invalid')) throw new UpstreamError('Jeton distant invalide', 401);
+    if (credentials.token.startsWith('invalid')) throw new UpstreamError('Invalid upstream access token', 401);
   }
   async push(event: WatchEvent, type: MediaType, credentials: Credentials, checkpoint: Checkpoint) {
     this.pushes.push({ event: structuredClone(event), type, token: credentials.token });
@@ -257,6 +257,25 @@ test('HTTP watch-state v2: advertised routes, fan-out, deduplication, canonical 
   assert.ok(jobs.data.jobs.every((job: any) => job.status === 'done' && job.event === 'played'));
 });
 
+test('HTTP job diagnostics expose timing and media fields only to authenticated administrators', async (t) => {
+  const f = await fixture(t);
+  const p = await f.profile();
+  await f.connect(p.id, 'simkl', 'diagnostics-private-token');
+  await f.configure(p.id, { pushProviders: ['simkl'] });
+  const event = { ...movieEvent('diagnostic-event'), event: 'pause' as const, played: false, positionMs: 45000, durationMs: 100000, ids: { imdb: 'tt1234567', private: 'excluded-identifier' } };
+  assert.equal((await f.request(f.addon(p, 'watch_state/push/movie/tt1234567.json'), { method: 'POST', auth: false, body: event })).status, 200);
+  await f.settle();
+  const path = `/api/profiles/${p.id}/jobs`;
+  assert.equal((await f.request(path, { auth: false })).status, 401);
+  const result = await f.request(path);
+  assert.equal(result.status, 200);
+  assert.deepEqual(result.data.jobs, [{ provider: 'simkl', status: 'done', error: null, attempts: 1,
+    event: 'pause', at: event.at, metaId: event.metaId, videoId: event.videoId, positionMs: 45000, durationMs: 100000, played: false }]);
+  for (const secret of [f.settings.apiKey, f.settings.encryptionKey, f.settings.simklClientSecret, 'diagnostics-private-token', 'excluded-identifier', f.store.profile(p.id)!.token, p.manifestUrl]) {
+    assert.equal(result.text.includes(secret), false);
+  }
+});
+
 test('HTTP malformed and bulk events: reject invalid atomic input, split PMDB episodes and preserve SIMKL bulk', async (t) => {
   const f = await fixture(t);
   const p = await f.profile();
@@ -287,7 +306,7 @@ test('HTTP consent revocation removes capabilities, rejects new events and preve
   const p = await f.profile();
   await f.connect(p.id, 'simkl', 's');
   await f.configure(p.id, { pullProvider: 'simkl', pushProviders: ['simkl'] });
-  f.providers.simkl.failure = new UpstreamError('Compte distant déconnecté', 401);
+  f.providers.simkl.failure = new UpstreamError('Upstream account disconnected', 401);
   const path = f.addon(p, 'watch_state/push/movie/tt1234567.json');
   assert.equal((await f.request(path, { method: 'POST', auth: false, body: movieEvent() })).status, 200);
   await f.settle();
@@ -309,7 +328,7 @@ test('HTTP destination removal does not replay blocked jobs to a removed provide
   const p = await f.profile();
   await f.connect(p.id, 'simkl', 's'); await f.connect(p.id, 'pmdb', 'p');
   await f.configure(p.id, { pushProviders: ['simkl', 'pmdb'] });
-  f.providers.simkl.failure = new UpstreamError('Compte distant déconnecté', 401);
+  f.providers.simkl.failure = new UpstreamError('Upstream account disconnected', 401);
   await f.request(f.addon(p, 'watch_state/push/movie/tt1234567.json'), { method: 'POST', auth: false, body: movieEvent() });
   await f.settle();
   assert.equal(f.providers.simkl.pushes.length, 1);

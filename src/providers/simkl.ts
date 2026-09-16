@@ -52,25 +52,25 @@ function bestItem(candidates: WatchItem[]): WatchItem {
     const index = key ? priority.indexOf(key) : -1;
     return index < 0 ? priority.length : index;
   };
-  if (!candidates.length) throw new UpstreamError('SIMKL : aucun identifiant exploitable pour la reprise.', 502);
+  if (!candidates.length) throw new UpstreamError('SIMKL: no usable identifier for this resume.', 502);
   return candidates.reduce((best, item) => rank(item) < rank(best) ? item : best);
 }
 function assertLibrary(response: unknown, expectedBucket?: Bucket): asserts response is Json {
-  if (!response || typeof response !== 'object' || Array.isArray(response)) throw new UpstreamError('SIMKL : historique invalide.', 502);
+  if (!response || typeof response !== 'object' || Array.isArray(response)) throw new UpstreamError('SIMKL: invalid history.', 502);
   // Official /all-items omits empty buckets and returns exactly {} for an empty library.
   // An error or unexpected envelope is never interpreted as an empty library.
   for (const [key, value] of Object.entries(response)) {
     if (!BUCKETS.includes(key as Bucket) || expectedBucket && key !== expectedBucket || !Array.isArray(value)) {
-      throw new UpstreamError('SIMKL : réponse d’historique inattendue, état précédent conservé.', 502);
+      throw new UpstreamError('SIMKL: unexpected history response; previous state preserved.', 502);
     }
     if (value.some(row => !row || typeof row !== 'object' || Array.isArray(row) || 'error' in row)) {
-      throw new UpstreamError('SIMKL : entrée d’historique invalide.', 502);
+      throw new UpstreamError('SIMKL: invalid history entry.', 502);
     }
   }
 }
 function episodeRows(value: Ids, anime: boolean, episode: Json, season?: number): WatchItem[] {
   const ep = number(episode.number ?? episode.episode);
-  if (ep === undefined || ep < 1) throw new Error('SIMKL a renvoyé un épisode sans numéro exploitable.');
+  if (ep === undefined || ep < 1) throw new Error('SIMKL returned an episode without a usable episode number.');
   const output: WatchItem[] = [];
   const tvSeason = number(episode.tvdb?.season ?? episode.tvdb_season ?? (!anime ? (episode.season ?? season) : undefined));
   const tvEpisode = number(episode.tvdb?.episode ?? episode.tvdb_number ?? (!anime ? ep : undefined));
@@ -89,7 +89,7 @@ function episodeRows(value: Ids, anime: boolean, episode: Json, season?: number)
       for (const metaId of nativeAliases(value)) output.push({ type: 'series', metaId, videoId: videoId(metaId, null, ep), season: null, episode: ep });
     }
   }
-  if (!output.length) throw new Error('SIMKL : numérotation ou identifiants impossibles à convertir sans inventer un épisode.');
+  if (!output.length) throw new Error('SIMKL: episode numbering or identifiers cannot be converted without guessing.');
   return output;
 }
 function target(event: WatchEvent, type: MediaType, video?: Video): Target {
@@ -107,30 +107,30 @@ function target(event: WatchEvent, type: MediaType, video?: Video): Target {
     if (primary && (NATIVE.has(primary.key) || primary.key === 'simkl')) selected = { [primary.key]: primary.value };
     else {
       const nativeKey = [...NATIVE].find(key => available[key]);
-      if (!nativeKey) throw new UpstreamError('SIMKL : épisode absolu sans identifiant anime (Kitsu, MAL, AniList, AniDB ou Simkl).', 422);
+      if (!nativeKey) throw new UpstreamError('SIMKL: absolute episode without an anime identifier (Kitsu, MAL, AniList, AniDB or Simkl).', 422);
       selected = { [nativeKey]: available[nativeKey]! };
     }
   } else {
     selected = Object.fromEntries(Object.entries(available).filter(([key]) => !NATIVE.has(key)));
     if (!Object.keys(selected).length && type === 'movie') selected = available;
   }
-  if (!Object.keys(selected).length) throw new UpstreamError('SIMKL : aucun identifiant pris en charge pour ce contenu.', 422);
-  if (type === 'series' && (!Number.isInteger(episode) || episode! < 1)) throw new UpstreamError('SIMKL : numéro d’épisode requis pour une écriture exacte.', 422);
-  if (type === 'series' && !native && (!Number.isInteger(season) || season! < 0)) throw new UpstreamError('SIMKL : saison requise pour une série à numérotation TV.', 422);
+  if (!Object.keys(selected).length) throw new UpstreamError('SIMKL: no supported identifier for this title.', 422);
+  if (type === 'series' && (!Number.isInteger(episode) || episode! < 1)) throw new UpstreamError('SIMKL: an episode number is required for an exact write.', 422);
+  if (type === 'series' && !native && (!Number.isInteger(season) || season! < 0)) throw new UpstreamError('SIMKL: a season is required for a series using TV episode numbering.', 422);
   return { ids: selected, native, ...(type === 'series' ? { episode, ...(native ? {} : { season: season! }) } : {}), videoId: video?.videoId ?? event.videoId };
 }
 function checkWrite(body: any, allowPartial = false): string | undefined {
-  if (!body || typeof body !== 'object' || Array.isArray(body)) throw new Error('SIMKL : réponse d’écriture invalide.');
-  if ('error' in body) throw new UpstreamError('SIMKL a renvoyé une erreur dans sa réponse d’écriture.', 502);
+  if (!body || typeof body !== 'object' || Array.isArray(body)) throw new Error('SIMKL: invalid write response.');
+  if ('error' in body) throw new UpstreamError('SIMKL returned an error in its write response.', 502);
   const missing = Object.values(body.not_found ?? {}).filter(Array.isArray).flat();
   if (missing.length) {
     const details = missing.slice(0, 10).map((item: any) => {
-      const identity = aliases(ids(item?.ids)).join(', ') || 'identifiant inconnu';
+      const identity = aliases(ids(item?.ids)).join(', ') || 'unknown identifier';
       const coordinates = (item?.seasons ?? []).flatMap((season: any) => (season.episodes ?? []).map((ep: any) => `S${season.number}E${ep.number}`));
       const absolute = (item?.episodes ?? []).map((ep: any) => `E${ep.number}`);
       return `${identity}${coordinates.length || absolute.length ? ` (${[...coordinates, ...absolute].join(', ')})` : ''}`;
     }).join('; ');
-    const warning = `SIMKL : ${missing.length} contenu(s) ou épisode(s) non reconnu(s) : ${details}.`;
+    const warning = `SIMKL: ${missing.length} unrecognized title(s) or episode(s): ${details}.`;
     if (allowPartial) return warning;
     throw new UpstreamError(warning, 422);
   }
@@ -153,7 +153,7 @@ export class SimklProvider implements Provider {
     let client = this.clients.get(credentials.token);
     if (!client) {
       client = new HttpClient('https://api.simkl.com', {
-        headers: { Authorization: `Bearer ${credentials.token}`, 'User-Agent': 'aiostreams-tracker-bridge/1.0.0', 'Content-Type': 'application/json' },
+        headers: { Authorization: `Bearer ${credentials.token}`, 'User-Agent': 'AIOSync/1.0.1', 'Content-Type': 'application/json' },
         fetch: this.fetcher, intervalMs: this.fetcher ? 0 : 1100, limiterKey: `simkl:${credentials.token}`,
       });
       this.clients.set(credentials.token, client);
@@ -161,7 +161,7 @@ export class SimklProvider implements Provider {
     return client;
   }
   private path(path: string, params: Record<string, string> = {}): string {
-    return `${path}?${new URLSearchParams({ client_id: this.clientId, 'app-name': 'aiostreams-tracker-bridge', 'app-version': '1.0.0', ...params })}`;
+    return `${path}?${new URLSearchParams({ client_id: this.clientId, 'app-name': 'AIOSync', 'app-version': '1.0.1', ...params })}`;
   }
   private async serial<T>(token: string, operation: () => Promise<T>): Promise<T> {
     const before = this.operations.get(token) ?? Promise.resolve();
@@ -173,7 +173,7 @@ export class SimklProvider implements Provider {
   }
   async validate(credentials: Credentials): Promise<void> {
     const result = await this.client(credentials).json(this.path('/users/settings'), { method: 'POST' });
-    if (!result?.account?.id) throw new Error('SIMKL : la réponse ne confirme pas de compte authentifié.');
+    if (!result?.account?.id) throw new Error('SIMKL: the response does not confirm an authenticated account.');
   }
   async push(event: WatchEvent, type: MediaType, credentials: Credentials, checkpoint: Checkpoint): Promise<PushResult> {
     return this.serial(credentials.token, () => this.pushOnce(event, type, credentials, checkpoint));
@@ -181,7 +181,7 @@ export class SimklProvider implements Provider {
   private async pushOnce(event: WatchEvent, type: MediaType, credentials: Credentials, checkpoint: Checkpoint): Promise<PushResult> {
     const client = this.client(credentials);
     const bulk = event.scope === 'season' || event.scope === 'series';
-    if (bulk && (!event.videos?.length || !['played', 'unplayed'].includes(event.event))) throw new UpstreamError('SIMKL : marque groupée sans liste exacte des épisodes.', 422);
+    if (bulk && (!event.videos?.length || !['played', 'unplayed'].includes(event.event))) throw new UpstreamError('SIMKL: bulk mark requires an exact episode list.', 422);
     const targets = bulk ? event.videos!.map(video => target(event, type, video)) : [target(event, type)];
     const watched = event.event === 'played' || event.event === 'stop' && event.played === true;
     if (watched || event.event === 'unplayed') {
@@ -211,11 +211,11 @@ export class SimklProvider implements Provider {
       // A manual unwatch must clear the old Continue Watching entry as well.
       // History marks already hide prior playbacks; this also removes future-dated stale sessions.
       const saved = await checkpoint('simkl:resume-list', () => client.json(this.path('/sync/playback', { hide_watched: 'false' })));
-      if (!Array.isArray(saved)) throw new Error('SIMKL : liste de reprises invalide.');
+      if (!Array.isArray(saved)) throw new Error('SIMKL: invalid resume list.');
       for (const playback of saved) {
         if (!this.matches(playback, targets, type)) continue;
         const id = String(playback.id ?? '');
-        if (!/^\d+$/.test(id)) throw new Error('SIMKL : identifiant de reprise invalide.');
+        if (!/^\d+$/.test(id)) throw new Error('SIMKL: invalid resume identifier.');
         await checkpoint(`simkl:resume-delete:${id}`, () => client.json(this.path(`/sync/playback/${id}`), { method: 'DELETE' }));
       }
       const cache = this.caches.get(credentials.token);
@@ -223,7 +223,7 @@ export class SimklProvider implements Provider {
       return outcome?.warning ? { warning: outcome.warning } : undefined;
     }
     if (event.durationMs === undefined || event.durationMs <= 0 || event.positionMs === undefined) {
-      return { localOnly: true, warning: 'SIMKL : progression inconnue (durée ou position absente), aucun point de reprise n’a été écrasé.' };
+      return { localOnly: true, warning: 'SIMKL: progress is unknown (missing duration or position); no saved resume was overwritten.' };
     }
     const progress = Math.max(0, Math.min(100, event.positionMs / event.durationMs * 100));
     const t = targets[0]!;
@@ -259,18 +259,18 @@ export class SimklProvider implements Provider {
   private async pullOnce(credentials: Credentials): Promise<Snapshot> {
     const client = this.client(credentials);
     const activity = await client.json(this.path('/sync/activities'));
-    if (!activity || typeof activity !== 'object' || 'error' in activity || typeof activity.all !== 'string') throw new Error('SIMKL : horodatage de synchronisation invalide.');
+    if (!activity || typeof activity !== 'object' || 'error' in activity || typeof activity.all !== 'string') throw new Error('SIMKL: invalid synchronization timestamp.');
     const prior = this.caches.get(credentials.token);
     const cache: Cache = { activity, entries: new Map(prior?.entries ?? []), dirty: false };
     const full = { extended: 'full_anime_seasons', episode_watched_at: 'yes', include_all_episodes: 'yes', next_watch_info: 'yes' };
     const merge = (response: unknown, expectedBucket?: Bucket) => {
       assertLibrary(response, expectedBucket);
       for (const bucket of BUCKETS) {
-        if (response[bucket] !== undefined && !Array.isArray(response[bucket])) throw new Error('SIMKL : historique invalide.');
+        if (response[bucket] !== undefined && !Array.isArray(response[bucket])) throw new Error('SIMKL: invalid history.');
         for (const row of response[bucket] ?? []) {
           const value = movieIds(row);
           if (!value.simkl) throw new Error('SIMKL : historique sans identifiant stable.');
-          if (!['watching', 'plantowatch', 'hold', 'completed', 'dropped'].includes(row.status)) throw new UpstreamError('SIMKL : état de visionnage manquant ou invalide.', 502);
+          if (!['watching', 'plantowatch', 'hold', 'completed', 'dropped'].includes(row.status)) throw new UpstreamError('SIMKL: missing or invalid watch status.', 502);
           cache.entries.set(`${bucket}:${value.simkl}`, { bucket, row });
         }
       }
@@ -288,12 +288,12 @@ export class SimklProvider implements Provider {
         assertLibrary(current);
         const keys = new Set<string>();
         for (const bucket of BUCKETS) {
-          if (current[bucket] !== undefined && !Array.isArray(current[bucket])) throw new Error('SIMKL : réconciliation des suppressions invalide.');
+          if (current[bucket] !== undefined && !Array.isArray(current[bucket])) throw new Error('SIMKL: invalid deletion reconciliation response.');
           for (const row of current[bucket] ?? []) {
             // Full AllItemsEntry uses movie/show.ids; the thin mode is also described as ids.simkl.
             // Accept either explicit identifier object, never positional/numeric guesses.
             const simkl = movieIds(row).simkl ?? ids(row.ids).simkl;
-            if (!simkl) throw new Error('SIMKL : identifiant manquant pendant la réconciliation.');
+            if (!simkl) throw new Error('SIMKL: missing identifier during reconciliation.');
             keys.add(`${bucket}:${simkl}`);
           }
         }
@@ -301,8 +301,8 @@ export class SimklProvider implements Provider {
       }
     }
     const playbacks = await client.json(this.path('/sync/playback', { limit: '10000' }));
-    if (!Array.isArray(playbacks)) throw new Error('SIMKL : liste de reprises invalide.');
-    if (playbacks.length >= 10000) throw new Error('SIMKL : limite de 10 000 reprises atteinte ; réponse potentiellement tronquée.');
+    if (!Array.isArray(playbacks)) throw new Error('SIMKL: invalid resume list.');
+    if (playbacks.length >= 10000) throw new Error('SIMKL: the 10,000-resume limit was reached; the response may be truncated.');
     const snapshot = this.snapshot(cache, playbacks);
     // Commit only after every upstream read and mapping succeeds; errors never erase a prior snapshot.
     this.caches.set(credentials.token, cache);
@@ -357,7 +357,7 @@ export class SimklProvider implements Provider {
     }
     for (const playback of playbacks) {
       const progress = number(playback.progress);
-      if (progress === undefined || progress < 0 || progress > 100) throw new Error('SIMKL : pourcentage de reprise invalide.');
+      if (progress === undefined || progress < 0 || progress > 100) throw new Error('SIMKL: invalid resume progress percentage.');
       const value = movieIds(playback);
       let runtime = number((playback.movie ?? playback.show ?? playback.anime)?.runtime);
       if (runtime === undefined) {
@@ -381,7 +381,7 @@ export class SimklProvider implements Provider {
         const anime = !!playback.anime || [...NATIVE].some(key => value[key]);
         const candidate = bestItem(episodeRows(value, anime, playback.episode, number(playback.episode.season)));
         items.push({ ...candidate, ...extras });
-      } else throw new Error('SIMKL : reprise sans film ni épisode.');
+      } else throw new Error('SIMKL: resume entry has neither a movie nor an episode.');
     }
     items.sort((a, b) => (b.at ?? 0) - (a.at ?? 0));
     return { items, watched: { movies: [...movies].sort(), episodes: [...episodes].sort(), counts, nextUp } };

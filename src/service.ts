@@ -14,8 +14,8 @@ export class TrackerService {
   constructor(store:Store,settings:Settings,providers:Record<ProviderName,Provider>){this.store=store;this.settings=settings;this.providers=providers;}
   url(p:Profile){return `${this.settings.baseUrl}/addon/${p.id}/${capability(this.settings.encryptionKey,this.settings.apiKey,p.id,p.token)}/manifest.json`;}
   manifest(p:Profile){return {
-    id:`org.trackerbridge.${p.id}`,version:'1.0.0',name:`Tracker Bridge · ${p.name}`,
-    description:'Synchronisation SIMKL / PublicMetaDB pour AIOStreams Jellyfin',types:['movie','series'],catalogs:[],
+    id:`org.trackerbridge.${p.id}`,version:'1.0.1',name:`AIOSync · ${p.name}`,
+    description:'SIMKL / PublicMetaDB watch-state sync for AIOStreams Jellyfin',types:['movie','series'],catalogs:[],
     resources:[{name:'watch_state',types:['movie','series'],idPrefixes:['tt','imdb:','tmdb:','tvdb:','kitsu:','mal:','anilist:','anidb:','simkl:']}],
     behaviorHints:{configurable:true,configurationRequired:false},
     watchState:{version:2,...(p.consent&&p.pushProviders.length?{push:{events:['start','pause','stop','played','unplayed'],bulk:true}}:{}),
@@ -31,17 +31,17 @@ export class TrackerService {
   }
   enqueue(p:Profile,type:MediaType,e:WatchEvent){
     const db=this.store.db;
-    if(!p.consent)throw new UpstreamError('Synchronisation désactivée : consentement requis',403);
+    if(!p.consent)throw new UpstreamError('Sync disabled: consent required',403);
     for(const provider of p.pushProviders) {
       const connection=db.prepare('SELECT error FROM connections WHERE profile=? AND provider=?').get(p.id,provider) as {error:string|null}|undefined;
-      if(!connection||connection.error||!this.store.credentials(p.id,provider))throw new UpstreamError(`Reconnecte ${provider}`,401);
+      if(!connection||connection.error||!this.store.credentials(p.id,provider))throw new UpstreamError(`Reconnect ${provider}`,401);
     }
-    if(!p.pushProviders.length) throw new UpstreamError('Push désactivé pour ce profil',403);
+    if(!p.pushProviders.length) throw new UpstreamError('Push disabled for this profile',403);
     return this.store.transaction(()=>{
       if(db.prepare('SELECT 1 FROM receipts WHERE profile=? AND event_id=?').get(p.id,e.id)) return false;
       const n=(db.prepare("SELECT COUNT(*) n FROM jobs WHERE status IN ('pending','blocked','running')").get() as any).n;
       const newJobs=p.pushProviders.reduce((sum,provider)=>sum+(provider==='pmdb'&&e.videos?e.videos.length:1),0);
-      if(n+newJobs>50000) throw new UpstreamError('File de synchronisation pleine',429,60000);
+      if(n+newJobs>50000) throw new UpstreamError('Sync queue is full',429,60000);
       db.prepare('INSERT INTO receipts VALUES(?,?,?)').run(p.id,e.id,Date.now());
       const videos=e.videos??[{videoId:e.videoId!,season:e.season,episode:e.episode}];
       if(e.event==='played'||e.event==='unplayed'||(e.event==='stop'&&e.played)) for(const v of videos)
@@ -97,31 +97,32 @@ export class TrackerService {
     const db=this.store.db;let e:WatchEvent=JSON.parse(job.payload);const p=this.store.profile(job.profile);if(!p)return;
     if(!db.prepare('SELECT 1 FROM jobs WHERE id=?').get(job.id))return;
     if(!p.consent||!p.pushProviders.includes(job.provider)){
-      db.prepare("UPDATE jobs SET status='blocked',error='Synchronisation désactivée' WHERE id=?").run(job.id);return;
+      db.prepare("UPDATE jobs SET status='blocked',error='Sync disabled' WHERE id=?").run(job.id);return;
     }
     const revision=this.store.connectionRevision(p.id,job.provider);
     const isCurrent=()=>this.store.connectionRevision(p.id,job.provider)===revision&&!!db.prepare('SELECT 1 FROM jobs WHERE id=?').get(job.id);
     const assertCurrent=()=>{
-      if(!isCurrent())throw new StaleWorkError('Connexion remplacée pendant la synchronisation');
+      if(!isCurrent())throw new StaleWorkError('Connection replaced during sync');
       const current=this.store.profile(p.id);
-      if(!current?.consent||!current.pushProviders.includes(job.provider))throw new UpstreamError('Synchronisation désactivée',403);
+      if(!current?.consent||!current.pushProviders.includes(job.provider))throw new UpstreamError('Sync disabled',403);
     };
     // A newer single watched/unwatched mark supersedes an older queued bulk entry.
-    if(e.videos){e={...e,videos:e.videos.filter(v=>{const m=db.prepare('SELECT at,event_id FROM marks WHERE profile=? AND video=?').get(p.id,v.videoId) as any;return !m||m.event_id===e.id||m.at<e.at;})};if(!e.videos.length){db.prepare("UPDATE jobs SET status='done',error='Remplacé par une opération plus récente' WHERE id=?").run(job.id);return;}}
+    if(e.videos){e={...e,videos:e.videos.filter(v=>{const m=db.prepare('SELECT at,event_id FROM marks WHERE profile=? AND video=?').get(p.id,v.videoId) as any;return !m||m.event_id===e.id||m.at<e.at;})};if(!e.videos.length){db.prepare("UPDATE jobs SET status='done',error='Superseded by a newer operation' WHERE id=?").run(job.id);return;}}
     if(job.provider==='pmdb'&&e.id.includes('|')&&e.scope==='episode'){
       const original=e.id.slice(0,-(e.videoId!.length+1));
       const m=db.prepare('SELECT at,event_id FROM marks WHERE profile=? AND video=?').get(p.id,e.videoId!) as any;
-      if(m&&m.at>=e.at&&m.event_id!==e.id&&m.event_id!==original){db.prepare("UPDATE jobs SET status='done',error='Remplacé par une opération plus récente' WHERE id=?").run(job.id);return;}
+      if(m&&m.at>=e.at&&m.event_id!==e.id&&m.event_id!==original){db.prepare("UPDATE jobs SET status='done',error='Superseded by a newer operation' WHERE id=?").run(job.id);return;}
     }
     db.prepare("UPDATE jobs SET status='running',attempts=attempts+1 WHERE id=?").run(job.id);
     try{
-      const credentials=this.store.credentials(p.id,job.provider);if(!credentials)throw new UpstreamError('Compte déconnecté',401);
+      const credentials=this.store.credentials(p.id,job.provider);if(!credentials)throw new UpstreamError('Account disconnected',401);
       const checkpoints=JSON.parse(job.checkpoints);
+      const beforeStart=e.event==='start'?db.prepare('SELECT data FROM snapshots WHERE profile=? AND provider=?').get(p.id,job.provider) as {data:string|null}|undefined:undefined;
       const result=await this.providers[job.provider as ProviderName].push(e,job.type,credentials,async(key,operation)=>{
         assertCurrent();
         if(Object.hasOwn(checkpoints,key))return checkpoints[key];
         const value=await operation();
-        if(!isCurrent())throw new StaleWorkError('Connexion remplacée pendant la synchronisation');
+        if(!isCurrent())throw new StaleWorkError('Connection replaced during sync');
         checkpoints[key]=value??null;
         db.prepare('UPDATE jobs SET checkpoints=? WHERE id=?').run(JSON.stringify(checkpoints),job.id);
         assertCurrent();return value;
@@ -129,12 +130,32 @@ export class TrackerService {
       assertCurrent();
       const videos=e.videos??[{videoId:e.videoId!,season:e.season,episode:e.episode}];
       for(const v of videos){
-        let item:WatchItem|null=null;
-        if(result?.localOnly&&['pause','stop'].includes(e.event)&&!e.played&&e.positionMs!==undefined){
-          item={type:job.type,metaId:e.metaId,videoId:v.videoId,season:v.season,episode:v.episode,positionMs:e.positionMs,at:e.at,played:false,
-            ...(e.durationMs&&e.durationMs>0?{durationMs:e.durationMs,progressPercent:Math.min(100,e.positionMs/e.durationMs*100)}:{})};
+        const clearsResume=e.event==='played'||e.event==='unplayed'||(e.event==='stop'&&e.played===true);
+        let item:(WatchItem&{_expiresAt?:number})|null=null;
+        if(!clearsResume&&(e.event==='start'||result?.localOnly)){
+          const validPosition=Number.isFinite(e.positionMs)&&e.positionMs!>=0&&
+            (e.durationMs===undefined||(Number.isFinite(e.durationMs)&&e.durationMs>0&&e.positionMs!<=e.durationMs));
+          // A start at zero can be a transient player reset during a seek. Keep
+          // the last known resume until a pause/stop supplies an explicit position.
+          if(validPosition&&(e.event!=='start'||e.positionMs!>0)){
+            item={type:job.type,metaId:e.metaId,videoId:v.videoId,season:v.season,episode:v.episode,positionMs:e.positionMs,at:e.at,played:false,
+              ...(e.durationMs!==undefined?{durationMs:e.durationMs,progressPercent:e.positionMs!/e.durationMs*100}:{})};
+          }else if(e.event==='start'){
+            // Native SIMKL start removes its paused playback. Back up a cached
+            // point before the next pull replaces that snapshot with an empty list.
+            const existing=db.prepare('SELECT 1 FROM overlays WHERE profile=? AND provider=? AND video=?').get(p.id,job.provider,v.videoId);
+            if(existing)continue;
+            if(beforeStart?.data){
+              item=this.mapSnapshot({...p,pullProvider:job.provider},JSON.parse(beforeStart.data)).items.find(i=>i.videoId===v.videoId)??null;
+            }
+          }
+          // Missing/invalid data must never become a deletion marker.
+          if(!item)continue;
+          // Active-session backups expire if a client disappears without a stop.
+          // Unsupported paused positions remain until replaced, as before.
+          if(e.event==='start')item={...item,_expiresAt:Date.now()/1000+86400};
         }
-        if(!result?.localOnly&&['pause','stop'].includes(e.event)&&!e.played) {
+        if(!clearsResume&&e.event!=='start'&&!result?.localOnly) {
           db.prepare('DELETE FROM overlays WHERE profile=? AND provider=? AND video=? AND at<=?').run(p.id,job.provider,v.videoId,e.at);
         } else {
           db.prepare('INSERT INTO overlays VALUES(?,?,?,?,?) ON CONFLICT(profile,provider,video) DO UPDATE SET data=excluded.data,at=excluded.at WHERE excluded.at>=overlays.at').run(p.id,job.provider,v.videoId,JSON.stringify(item),e.at);
@@ -148,19 +169,19 @@ export class TrackerService {
       // Disconnection deletes this job. Never resurrect it or attach its result/error
       // to credentials connected while an upstream operation was in flight.
       if(error instanceof StaleWorkError||!isCurrent())return;
-      const err=error instanceof UpstreamError?error:new UpstreamError(error instanceof Error?error.message:'Erreur du connecteur',502);
+      const err=error instanceof UpstreamError?error:new UpstreamError(error instanceof Error?error.message:'Provider error',502);
       const attempts=job.attempts+1;const auth=[401,403].includes(err.status);
       const retry=err.status===429||err.status>=500;
       const status=auth?'blocked':retry&&attempts<15?'pending':'failed';
       const wait=Math.max(err.retryAfterMs,Math.min(6*3600000,30000*2**Math.min(attempts-1,10)));
       db.prepare('UPDATE jobs SET status=?,due=?,error=? WHERE id=?').run(status,Date.now()+wait,err.message,job.id);
-      if(auth&&err.message!=='Synchronisation désactivée')db.prepare('UPDATE connections SET error=? WHERE profile=? AND provider=?').run(err.message,p.id,job.provider);
+      if(auth&&err.message!=='Sync disabled')db.prepare('UPDATE connections SET error=? WHERE profile=? AND provider=?').run(err.message,p.id,job.provider);
     }
   }
   refresh(p:Profile):Promise<void>{
-    if(!p.pullProvider||!p.consent)return Promise.reject(new UpstreamError('Pull désactivé',403));
+    if(!p.pullProvider||!p.consent)return Promise.reject(new UpstreamError('Pull disabled',403));
     const provider=p.pullProvider;const revision=this.store.connectionRevision(p.id,provider);
-    if(!revision)return Promise.reject(new UpstreamError('Compte non connecté',401));
+    if(!revision)return Promise.reject(new UpstreamError('Account not connected',401));
     const key=`${p.id}:${provider}:${revision}`;
     const isCurrent=()=>{
       const current=this.store.profile(p.id);
@@ -169,15 +190,15 @@ export class TrackerService {
     if(this.refreshing.has(key))return this.refreshing.get(key)!;
     const task=(async()=>{
       try{
-        if(!isCurrent())throw new StaleWorkError('Configuration modifiée pendant la lecture');
-        const c=this.store.credentials(p.id,provider);if(!c)throw new UpstreamError('Compte non connecté',401);
+        if(!isCurrent())throw new StaleWorkError('Configuration changed during pull');
+        const c=this.store.credentials(p.id,provider);if(!c)throw new UpstreamError('Account not connected',401);
         const data=await this.providers[provider].pull(c);
         // Commit only a complete successful snapshot. Never replace history with a partial read.
-        if(!Array.isArray(data.items)||!Array.isArray(data.watched?.movies)||!Array.isArray(data.watched?.episodes))throw new UpstreamError('Snapshot incomplet',502);
-        if(!isCurrent())throw new StaleWorkError('Connexion remplacée pendant la lecture');
+        if(!Array.isArray(data.items)||!Array.isArray(data.watched?.movies)||!Array.isArray(data.watched?.episodes))throw new UpstreamError('Incomplete snapshot',502);
+        if(!isCurrent())throw new StaleWorkError('Connection replaced during pull');
         this.store.db.prepare('INSERT INTO snapshots VALUES(?,?,?,?,NULL) ON CONFLICT(profile,provider) DO UPDATE SET data=excluded.data,updated=excluded.updated,error=NULL').run(p.id,provider,JSON.stringify(data),Date.now());
       }catch(e){
-        if(isCurrent())this.store.db.prepare('INSERT INTO snapshots VALUES(?,?,NULL,?,?) ON CONFLICT(profile,provider) DO UPDATE SET updated=excluded.updated,error=excluded.error').run(p.id,provider,Date.now(),e instanceof Error?e.message:'Synchronisation impossible');
+        if(isCurrent())this.store.db.prepare('INSERT INTO snapshots VALUES(?,?,NULL,?,?) ON CONFLICT(profile,provider) DO UPDATE SET updated=excluded.updated,error=excluded.error').run(p.id,provider,Date.now(),e instanceof Error?e.message:'Sync failed');
         throw e;
       }
     })().finally(()=>this.refreshing.delete(key));this.refreshing.set(key,task);return task;
@@ -198,7 +219,10 @@ export class TrackerService {
     };
     const items=s.items.map(mapItem);
     for(const o of this.store.db.prepare('SELECT video,data,at FROM overlays WHERE profile=? AND provider=?').all(p.id,p.pullProvider!) as any[]){
-      const parsed=JSON.parse(o.data) as WatchItem|null;
+      const stored=JSON.parse(o.data) as (WatchItem&{_expiresAt?:number})|null;
+      if(stored?._expiresAt!==undefined&&stored._expiresAt<Date.now()/1000){this.store.db.prepare('DELETE FROM overlays WHERE profile=? AND provider=? AND video=?').run(p.id,p.pullProvider!,o.video);continue;}
+      // Internal expiry metadata is never part of the watch_state response.
+      const parsed=stored?(({_expiresAt,...item})=>item)(stored):null;
       const local=parsed?mapItem(parsed):null;
       const overlayVideo=local?.videoId??videoAliases.get(`series|${o.video}`)?.video??videoAliases.get(`movie|${o.video}`)?.video??o.video;
       const idx=items.findIndex(i=>i.videoId===overlayVideo);const remote=idx>=0?items[idx]:null;
@@ -218,9 +242,9 @@ export class TrackerService {
     }};
   }
   async pull(p:Profile,since:string|null){
-    if(!p.pullProvider||!p.consent)throw new UpstreamError('Pull désactivé',403);
+    if(!p.pullProvider||!p.consent)throw new UpstreamError('Pull disabled',403);
     const revision=this.store.connectionRevision(p.id,p.pullProvider);
-    if(!revision)throw new UpstreamError('Compte non connecté',401);
+    if(!revision)throw new UpstreamError('Account not connected',401);
     let row=this.store.db.prepare('SELECT * FROM snapshots WHERE profile=? AND provider=?').get(p.id,p.pullProvider) as any;
     if(!row||Date.now()-row.updated>this.settings.refreshSeconds*1000){
       let timeout:ReturnType<typeof setTimeout>|undefined;
@@ -228,16 +252,16 @@ export class TrackerService {
       row=this.store.db.prepare('SELECT * FROM snapshots WHERE profile=? AND provider=?').get(p.id,p.pullProvider) as any;
     }
     const current=this.store.profile(p.id);
-    if(this.store.connectionRevision(p.id,p.pullProvider)!==revision||!current?.consent||current.pullProvider!==p.pullProvider)throw new UpstreamError('Configuration modifiée pendant la lecture',503);
-    if(!row?.data)throw new UpstreamError(row?.error??'Première synchronisation en cours, réessaie dans quelques instants',503,30000);
+    if(this.store.connectionRevision(p.id,p.pullProvider)!==revision||!current?.consent||current.pullProvider!==p.pullProvider)throw new UpstreamError('Configuration changed during pull',503);
+    if(!row?.data)throw new UpstreamError(row?.error??'Initial sync in progress; try again shortly',503,30000);
     const s=this.mapSnapshot(p,JSON.parse(row.data));
     const version=createHash('sha256').update(JSON.stringify([p.pullProvider,s.watched])).digest('hex').slice(0,32);
     // A client must never learn a new watched version without its corresponding set.
-    if(row.error&&since!==version)throw new UpstreamError('Lecture du tracker indisponible ; historique précédent conservé',503,30000);
+    if(row.error&&since!==version)throw new UpstreamError('Tracker unavailable; previous history preserved',503,30000);
     const body={version,items:s.items,...(!row.error&&since!==version?{watched:s.watched}:{})};
     if(Buffer.byteLength(JSON.stringify(body))>(this.settings.maxPullBytes??4_900_000)
       ||s.watched.movies.length>(this.settings.maxWatchedMovies??50000)
-      ||s.watched.episodes.length>(this.settings.maxWatchedEpisodes??50000))throw new UpstreamError('Historique supérieur aux limites configurées ; augmente les limites des deux services avant import',503);
+      ||s.watched.episodes.length>(this.settings.maxWatchedEpisodes??50000))throw new UpstreamError('History exceeds configured limits; increase the limits in both services before importing',503);
     return body;
   }
 }

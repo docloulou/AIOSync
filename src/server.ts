@@ -15,10 +15,10 @@ import type { Provider, ProviderName } from './types.ts';
 
 function json(res:ServerResponse,status:number,data:unknown){res.writeHead(status,{'Content-Type':'application/json; charset=utf-8'});res.end(JSON.stringify(data));}
 async function body(req:IncomingMessage):Promise<any>{
-  if(!req.headers['content-type']?.toLowerCase().startsWith('application/json'))throw Object.assign(new InputError('Content-Type application/json requis'),{status:415});
+  if(!req.headers['content-type']?.toLowerCase().startsWith('application/json'))throw Object.assign(new InputError('Content-Type application/json is required'),{status:415});
   const chunks:Buffer[]=[];let length=0;
-  for await(const chunk of req){length+=chunk.length;if(length>1_000_000)throw Object.assign(new InputError('Corps trop volumineux'),{status:413});chunks.push(chunk);}
-  try{return JSON.parse(Buffer.concat(chunks).toString('utf8'));}catch{throw new InputError('JSON invalide');}
+  for await(const chunk of req){length+=chunk.length;if(length>1_000_000)throw Object.assign(new InputError('Request body is too large'),{status:413});chunks.push(chunk);}
+  try{return JSON.parse(Buffer.concat(chunks).toString('utf8'));}catch{throw new InputError('Invalid JSON');}
 }
 function sessionToken(req:IncomingMessage){const v=/(?:^|;\s*)tracker_session=([^;]+)/.exec(req.headers.cookie??'');return v?.[1]??'';}
 
@@ -43,36 +43,36 @@ export function createApp(settings:Settings,options:{store?:Store;providers?:Rec
     if(url.pathname==='/healthz'&&method==='GET')return json(res,200,{ok:true});
     if(url.pathname==='/manifest.json'&&method==='GET'){
       res.setHeader('Access-Control-Allow-Origin','*');
-      return json(res,200,{id:'org.trackerbridge',version:'1.0.0',name:'Tracker Bridge — SIMKL / PMDB',
-        description:'Ouvre la configuration pour connecter tes comptes et créer une URL privée.',types:['movie','series'],resources:[],catalogs:[],
+      return json(res,200,{id:'org.trackerbridge',version:'1.0.1',name:'AIOSync — SIMKL / PMDB',
+        description:'Open the configuration page to connect your accounts and create a personal addon URL.',types:['movie','series'],resources:[],catalogs:[],
         behaviorHints:{configurable:true,configurationRequired:true}});
     }
     if(url.pathname.startsWith('/addon/')){
       res.setHeader('Access-Control-Allow-Origin','*');res.setHeader('Access-Control-Allow-Methods','GET,POST,OPTIONS');res.setHeader('Access-Control-Allow-Headers','Content-Type');
       if(method==='OPTIONS'){res.writeHead(204);res.end();return;}
       const match=/^\/addon\/([a-f\d-]+)\/([\w-]+)\/(.+)$/.exec(url.pathname);
-      if(!match)throw Object.assign(new InputError('Route inconnue'),{status:404});
+      if(!match)throw Object.assign(new InputError('Unknown route'),{status:404});
       const p=store.profile(match[1]);
-      if(!p||!equal(match[2],capability(settings.encryptionKey,settings.apiKey,p.id,p.token)))throw new UpstreamError('URL d’addon invalide ou révoquée',401);
+      if(!p||!equal(match[2],capability(settings.encryptionKey,settings.apiKey,p.id,p.token)))throw new UpstreamError('Invalid or revoked addon URL',401);
       if(match[3]==='manifest.json'&&method==='GET')return json(res,200,service.manifest(p));
       if(match[3]==='configure'&&method==='GET'){res.writeHead(302,{Location:'/'});res.end();return;}
       if(match[3]==='watch_state/pull.json'&&method==='GET')return json(res,200,await service.pull(p,url.searchParams.get('since')));
       const push=/^watch_state\/push\/(movie|series)\/(.+)\.json$/.exec(match[3]);
       if(push&&method==='POST'){
-        let id:string;try{id=decodeURIComponent(push[2]);}catch{throw new InputError('Identifiant URL invalide');}
+        let id:string;try{id=decodeURIComponent(push[2]);}catch{throw new InputError('Invalid URL identifier');}
         const event=eventFrom(await body(req),push[1] as 'movie'|'series',id);
         service.enqueue(p,push[1] as 'movie'|'series',event);json(res,200,{accepted:true});void service.tick();return;
       }
-      throw Object.assign(new InputError('Route inconnue'),{status:404});
+      throw Object.assign(new InputError('Unknown route'),{status:404});
     }
     // Admin APIs are same-origin; the shared key can alternatively be a Bearer token for scripts.
-    if(method!=='GET'&&method!=='HEAD'&&req.headers.origin&&req.headers.origin!==settings.baseUrl)throw new UpstreamError('Origine non autorisée',403);
+    if(method!=='GET'&&method!=='HEAD'&&req.headers.origin&&req.headers.origin!==settings.baseUrl)throw new UpstreamError('Origin is not allowed',403);
     if(url.pathname==='/api/login'&&method==='POST'){
       const addr=req.socket.remoteAddress??'unknown';const now=Date.now();
       if(attempts.size>10000)for(const [k,v]of attempts)if(v.reset<now)attempts.delete(k);
-      let a=attempts.get(addr);if(!a||a.reset<now){a={n:0,reset:now+600000};attempts.set(addr,a);}if(a.n>=20)throw new UpstreamError('Trop de tentatives de connexion',429,a.reset-now);
+      let a=attempts.get(addr);if(!a||a.reset<now){a={n:0,reset:now+600000};attempts.set(addr,a);}if(a.n>=20)throw new UpstreamError('Too many login attempts',429,a.reset-now);
       a.n++;const b=await body(req);
-      if(typeof b.apiKey!=='string'||!equal(b.apiKey,settings.apiKey))throw new UpstreamError('Clé globale incorrecte',401);
+      if(typeof b.apiKey!=='string'||!equal(b.apiKey,settings.apiKey))throw new UpstreamError('Incorrect global API key',401);
       attempts.delete(addr);const token=randomToken();store.db.prepare('INSERT INTO sessions VALUES(?,?)').run(sessionHash(token),now+settings.sessionHours*3600000);
       res.setHeader('Set-Cookie',cookie(token,settings.sessionHours*3600));return json(res,200,{authenticated:true});
     }
@@ -85,28 +85,28 @@ export function createApp(settings:Settings,options:{store?:Store;providers?:Rec
     if(url.pathname==='/oauth/simkl/callback'&&method==='GET'){
       const state=url.searchParams.get('state')??'';const code=url.searchParams.get('code');
       const record=store.db.prepare('SELECT * FROM oauth WHERE state=? AND session=? AND expires>?').get(hash(state),sessionHash(sessionToken(req)),Date.now()) as any;
-      if(!record||!authenticated(req))throw new UpstreamError('Session OAuth expirée ou invalide, reconnecte-toi et réessaie',401);
+      if(!record||!authenticated(req))throw new UpstreamError('OAuth session expired or invalid; sign in again and retry',401);
       store.db.prepare('DELETE FROM oauth WHERE state=?').run(hash(state));
-      if(!code||url.searchParams.has('error'))throw new InputError('Autorisation SIMKL annulée');
+      if(!code||url.searchParams.has('error'))throw new InputError('SIMKL authorization was cancelled');
       const token=await new HttpClient('https://api.simkl.com').json('/oauth/token',{method:'POST',body:JSON.stringify({code,client_id:settings.simklClientId,client_secret:settings.simklClientSecret,redirect_uri:`${settings.baseUrl}/oauth/simkl/callback`,grant_type:'authorization_code'})});
-      if(typeof token?.access_token!=='string'||!token.access_token)throw new UpstreamError('SIMKL ne renvoie pas de jeton valide',502);
-      if(store.credentials(record.profile,'simkl'))throw new UpstreamError('Déconnecte le compte SIMKL existant avant de le remplacer',409);
+      if(typeof token?.access_token!=='string'||!token.access_token)throw new UpstreamError('SIMKL did not return a valid access token',502);
+      if(store.credentials(record.profile,'simkl'))throw new UpstreamError('Disconnect the existing SIMKL account before replacing it',409);
       await providers.simkl.validate({token:token.access_token});store.connect(record.profile,'simkl',{token:token.access_token});
       res.writeHead(303,{Location:'/'});res.end();return;
     }
     if(url.pathname.startsWith('/api/')){
-      if(!authenticated(req))throw new UpstreamError('Authentification requise',401);
+      if(!authenticated(req))throw new UpstreamError('Authentication required',401);
       if(url.pathname==='/api/profiles'&&method==='GET')return json(res,200,{profiles:store.profiles().map(p=>service.describe(p))});
       if(url.pathname==='/api/profiles'&&method==='POST'){
         const p=store.create(profileFields(await body(req)));return json(res,201,service.describe(p));
       }
       const route=/^\/api\/profiles\/([a-f\d-]+)(?:\/(.*))?$/.exec(url.pathname);
       if(route){
-        const p=store.profile(route[1]);if(!p)throw Object.assign(new InputError('Profil introuvable'),{status:404});
+        const p=store.profile(route[1]);if(!p)throw Object.assign(new InputError('Profile not found'),{status:404});
         const action=route[2]??'';
         if(!action&&method==='PUT'){
           const fields=profileFields(await body(req));
-          for(const provider of [...fields.pushProviders,...(fields.pullProvider?[fields.pullProvider]:[])])if(!store.credentials(p.id,provider))throw new InputError(`Connecte d’abord ${provider}`);
+          for(const provider of [...fields.pushProviders,...(fields.pullProvider?[fields.pullProvider]:[])])if(!store.credentials(p.id,provider))throw new InputError(`Connect ${provider} first`);
           const updated={...p,...fields};store.save(updated);return json(res,200,service.describe(updated));
         }
         if(!action&&method==='DELETE'){store.db.prepare('DELETE FROM profiles WHERE id=?').run(p.id);return json(res,200,{ok:true});}
@@ -117,12 +117,15 @@ export function createApp(settings:Settings,options:{store?:Store;providers?:Rec
         }
         if(action==='jobs'&&method==='GET'){
           const rows=store.db.prepare('SELECT provider,payload,status,error,attempts FROM jobs WHERE profile=? ORDER BY id DESC LIMIT 100').all(p.id) as any[];
-          return json(res,200,{jobs:rows.map(({payload,...rest})=>({...rest,event:JSON.parse(payload).event}))});
+          return json(res,200,{jobs:rows.map(({payload,...rest})=>{
+            const {event,at,metaId,videoId,positionMs,durationMs,played}=JSON.parse(payload);
+            return {...rest,event,at,metaId,videoId,positionMs,durationMs,played};
+          })});
         }
         if(action==='oauth/simkl'&&method==='POST'){
-          if(!settings.simklClientId||!settings.simklClientSecret)throw new InputError('Configure SIMKL_CLIENT_ID et SIMKL_CLIENT_SECRET');
-          if(store.credentials(p.id,'simkl'))throw new InputError('Déconnecte le compte SIMKL existant avant de le remplacer');
-          const session=sessionToken(req);if(!session||!store.db.prepare('SELECT 1 FROM sessions WHERE token=? AND expires>?').get(sessionHash(session),Date.now()))throw new InputError('OAuth nécessite une session ouverte dans ce navigateur');
+          if(!settings.simklClientId||!settings.simklClientSecret)throw new InputError('Configure SIMKL_CLIENT_ID and SIMKL_CLIENT_SECRET');
+          if(store.credentials(p.id,'simkl'))throw new InputError('Disconnect the existing SIMKL account before replacing it');
+          const session=sessionToken(req);if(!session||!store.db.prepare('SELECT 1 FROM sessions WHERE token=? AND expires>?').get(sessionHash(session),Date.now()))throw new InputError('OAuth requires an active session in this browser');
           const state=randomToken();store.db.prepare('INSERT INTO oauth VALUES(?,?,?,?)').run(hash(state),p.id,sessionHash(session),Date.now()+600000);
           const target=new URL('https://simkl.com/oauth/authorize');target.search=new URLSearchParams({client_id:settings.simklClientId,redirect_uri:`${settings.baseUrl}/oauth/simkl/callback`,response_type:'code',state}).toString();
           return json(res,200,{url:target.href});
@@ -132,12 +135,12 @@ export function createApp(settings:Settings,options:{store?:Store;providers?:Rec
           const provider=connect[1] as ProviderName;
           if(method==='POST'){
             const b=await body(req);const value=b.token||(provider==='pmdb'?settings.pmdbApiKey:settings.simklAccessToken);
-            if(typeof value!=='string'||!value.trim()||value.length>10000)throw new InputError('Jeton requis');
-            if(provider==='simkl'&&!settings.simklClientId)throw new InputError('SIMKL_CLIENT_ID requis dans .env');
+            if(typeof value!=='string'||!value.trim()||value.length>10000)throw new InputError('Access token required');
+            if(provider==='simkl'&&!settings.simklClientId)throw new InputError('SIMKL_CLIENT_ID is required in .env');
             const c={token:value.trim()};const old=store.credentials(p.id,provider);
-            if(old&&!equal(old.token,c.token))throw new InputError('Déconnecte d’abord le compte existant : sa file et ses reprises seront supprimées avant de changer de compte');
+            if(old&&!equal(old.token,c.token))throw new InputError('Disconnect the existing account first: its queued events and cached resumes will be deleted before switching accounts');
             try{await providers[provider].validate(c);}catch(e){
-              if(e instanceof UpstreamError&&[401,403].includes(e.status))throw new InputError(`Identifiants ${provider} refusés par le fournisseur`);
+              if(e instanceof UpstreamError&&[401,403].includes(e.status))throw new InputError(`The provider rejected the ${provider} credentials`);
               throw e;
             }
             store.connect(p.id,provider,c);return json(res,200,{connected:true});
@@ -149,21 +152,21 @@ export function createApp(settings:Settings,options:{store?:Store;providers?:Rec
           }
         }
       }
-      throw Object.assign(new InputError('Route inconnue'),{status:404});
+      throw Object.assign(new InputError('Unknown route'),{status:404});
     }
     const staticFiles:Record<string,[string,string]>={'/':['index.html','text/html; charset=utf-8'],'/configure':['index.html','text/html; charset=utf-8'],'/app.js':['app.js','text/javascript; charset=utf-8'],'/style.css':['style.css','text/css; charset=utf-8']};
     const file=staticFiles[url.pathname];if(file&&method==='GET'){
       res.writeHead(200,{'Content-Type':file[1]});res.end(await readFile(new URL(`../public/${file[0]}`,import.meta.url)));return;
     }
-    throw Object.assign(new InputError('Route inconnue'),{status:404});
+    throw Object.assign(new InputError('Unknown route'),{status:404});
   }
   const server=createServer((req,res)=>{handle(req,res).catch(error=>{
     if(res.headersSent){res.end();return;}
     const status=error instanceof UpstreamError||error instanceof InputError?error.status:500;
     if(error instanceof UpstreamError&&error.retryAfterMs)res.setHeader('Retry-After',String(Math.ceil(error.retryAfterMs/1000)));
     // No request URLs, auth headers, tokens, payloads or upstream bodies in logs.
-    if(status===500)process.stderr.write('Erreur interne de traitement HTTP\n');
-    json(res,status,{error:status===500?'Erreur interne':error.message});
+    if(status===500)process.stderr.write('Internal HTTP processing error\n');
+    json(res,status,{error:status===500?'Internal error':error.message});
   });});
   server.requestTimeout=30000;server.headersTimeout=15000;server.maxHeadersCount=50;
   return {server,store,service};
@@ -171,7 +174,7 @@ export function createApp(settings:Settings,options:{store?:Store;providers?:Rec
 
 if(process.argv[1]&&pathToFileURL(process.argv[1]).href===import.meta.url){
   const settings=loadSettings();const app=createApp(settings);
-  app.server.listen(settings.port,settings.host,()=>{process.stdout.write(`Tracker Bridge écoute sur le port ${settings.port}\n`);app.service.start();});
+  app.server.listen(settings.port,settings.host,()=>{process.stdout.write(`AIOSync is listening on port ${settings.port}\n`);app.service.start();});
   let stopping=false;
   const stop=async()=>{
     if(stopping)return;stopping=true;

@@ -18,7 +18,7 @@ function setup(t: test.TestContext, overrides: Partial<Provider> = {}) {
   t.after(() => store.close());
   const provider: Provider = { name: 'pmdb', validate: async () => {}, push: async () => {}, pull: async () => state(), ...overrides };
   const service = new TrackerService(store, settings, { pmdb: provider, simkl: { ...provider, name: 'simkl' } });
-  const p = store.create({ name: 'Compte test', pushProviders: ['pmdb'], pullProvider: 'pmdb', consent: true });
+  const p = store.create({ name: 'Test account', pushProviders: ['pmdb'], pullProvider: 'pmdb', consent: true });
   store.connect(p.id, 'pmdb', { token: 'pm-account-one' });
   return { store, service, provider, p };
 }
@@ -74,6 +74,91 @@ test('service never publishes an unseen watched version during an upstream outag
   await assert.rejects(service.pull(p, 'other-version'), (error: any) => error.status === 503);
 });
 
+test('start keeps a local resume through an empty provider pull and still delivers native events', async t => {
+  for(const name of ['simkl','pmdb'] as const){
+    const delivered:string[]=[];
+    const {store,service,p}=setup(t,{push:async e=>{delivered.push(e.event);}});
+    p.pushProviders=[name];p.pullProvider=name;store.save(p);
+    if(name==='simkl')store.connect(p.id,name,{token:'simkl-account'});
+    const e=event({id:`${name}-seek`,event:'start',positionMs:12000});
+    service.enqueue(p,'series',e);
+    await service.deliver(jobs(store)[0]);
+    await service.refresh(p);
+    const pull=await service.pull(p,null);
+    assert.equal(pull.items[0].positionMs,12000);
+    assert.equal(pull.items[0].progressPercent,60);
+    assert.equal(Object.hasOwn(pull.items[0],'_expiresAt'),false);
+    assert.deepEqual(delivered,['start']);
+    // An explicit completion still removes the backup and dispatches normally.
+    service.enqueue(p,'series',event({id:`${name}-finished`,event:'stop',played:true,at:e.at+1}));
+    await service.deliver(jobs(store)[1]);
+    assert.equal(service.mapSnapshot(p,state()).items.length,0);
+    assert.deepEqual(delivered,['start','stop']);
+  }
+});
+
+test('zero or incomplete starts preserve the cached point before a provider clears its paused list', async t => {
+  for(const fields of [{positionMs:0},{positionMs:undefined},{positionMs:8000,durationMs:0}]){
+    const {store,service,p}=setup(t);
+    const e=event({id:'transient-start',event:'start',...fields});
+    const snapshot=state();
+    snapshot.items=[{type:'series',metaId:'tmdb:99',videoId:'tmdb:99:1:1',positionMs:7000,durationMs:20000,at:e.at-5}];
+    cached(store,p,snapshot);
+    service.enqueue(p,'series',e);
+    await service.deliver(jobs(store)[0]);
+    await service.refresh(p);
+    assert.equal((await service.pull(p,null)).items[0].positionMs,7000);
+  }
+});
+
+test('invalid fallback events do not delete or replace the last local resume', async t => {
+  const {store,service,p}=setup(t,{push:async()=>({localOnly:true})});
+  const e=event();
+  service.enqueue(p,'series',e);
+  await service.deliver(jobs(store)[0]);
+  for(const [index,fields] of [
+    {positionMs:undefined},{positionMs:8000,durationMs:0},{positionMs:21000,durationMs:20000},
+  ].entries()){
+    service.enqueue(p,'series',event({id:`invalid-${index}`,at:e.at+index+1,...fields}));
+    await service.deliver(jobs(store).at(-1));
+    assert.equal(service.mapSnapshot(p,state()).items[0].positionMs,5000);
+  }
+  service.enqueue(p,'series',event({id:'zero-start',event:'start',positionMs:0,at:e.at+5}));
+  await service.deliver(jobs(store).at(-1));
+  assert.equal(service.mapSnapshot(p,state()).items[0].positionMs,5000);
+});
+
+test('a real rewind is saved, a newer remote resume wins, and unplayed still clears it', async t => {
+  const {store,service,p}=setup(t,{push:async()=>({localOnly:true})});
+  const e=event({event:'start',positionMs:14000});
+  service.enqueue(p,'series',e);await service.deliver(jobs(store)[0]);
+  service.enqueue(p,'series',event({id:'rewind',positionMs:3000,at:e.at+1}));
+  await service.deliver(jobs(store)[1]);
+  assert.equal(service.mapSnapshot(p,state()).items[0].positionMs,3000);
+  const remote=state();
+  remote.items=[{type:'series',metaId:'tmdb:99',videoId:'tmdb:99:1:1',positionMs:9000,at:e.at+2}];
+  assert.equal(service.mapSnapshot(p,remote).items[0].positionMs,9000);
+  assert.equal(store.db.prepare('SELECT 1 FROM overlays').all().length,0);
+  service.enqueue(p,'series',event({id:'unwatch',event:'unplayed',at:e.at+3}));
+  await service.deliver(jobs(store)[2]);
+  assert.equal(service.mapSnapshot(p,remote).items.length,0);
+});
+
+test('active backups expire and a successful pause returns to the provider resume', async t => {
+  const {store,service,p}=setup(t);
+  service.enqueue(p,'series',event({event:'start'}));await service.deliver(jobs(store)[0]);
+  const row=store.db.prepare('SELECT * FROM overlays').get() as any;
+  const data=JSON.parse(row.data);data._expiresAt=Date.now()/1000-1;
+  store.db.prepare('UPDATE overlays SET data=?').run(JSON.stringify(data));
+  assert.equal(service.mapSnapshot(p,state()).items.length,0);
+  service.enqueue(p,'series',event({id:'new-start',event:'start'}));await service.deliver(jobs(store)[1]);
+  service.enqueue(p,'series',event({id:'real-pause',positionMs:6000}));await service.deliver(jobs(store)[2]);
+  assert.equal(store.db.prepare('SELECT 1 FROM overlays').all().length,0);
+  const remote=state();
+  remote.items=[{type:'series',metaId:'tmdb:99',videoId:'tmdb:99:1:1',positionMs:6000}];
+  assert.equal(service.mapSnapshot(p,remote).items[0].positionMs,6000);
+});
+
 test('bulk broadcast aliases preserve exact arbitrary video IDs and counts under every known show ID', t => {
   const { store, service, p } = setup(t);
   service.enqueue(p, 'series', event({ id: 'bulk', event: 'played', scope: 'series', season: null, videoId: undefined,
@@ -104,7 +189,7 @@ test('connection generations survive ordinary reconnect but change after explici
   const before = store.connectionRevision(p.id, 'pmdb');
   store.connect(p.id, 'pmdb', { token: 'pm-account-one' });
   assert.equal(store.connectionRevision(p.id, 'pmdb'), before);
-  assert.throws(() => store.connect(p.id, 'pmdb', { token: 'pm-account-two' }), /Déconnecte/);
+  assert.throws(() => store.connect(p.id, 'pmdb', { token: 'pm-account-two' }), /Disconnect/);
   disconnect(store, p);
   store.connect(p.id, 'pmdb', { token: 'pm-account-one' });
   assert.notEqual(store.connectionRevision(p.id, 'pmdb'), before);
@@ -119,7 +204,7 @@ test('in-flight refresh cannot commit an old account snapshot after disconnect/r
   provider.pull = async () => ({ ...state(), watched: { ...state().watched, movies: ['tmdb:200'] } });
   await service.refresh(p);
   old.resolve(state());
-  await assert.rejects(pending, /Connexion remplacée/);
+  await assert.rejects(pending, /Connection replaced/);
   const row: any = store.db.prepare('SELECT data,error FROM snapshots').get();
   assert.deepEqual(JSON.parse(row.data).watched.movies, ['tmdb:200']);
   assert.equal(row.error, null);
@@ -163,14 +248,14 @@ test('consent and push routing prevent delivery and consent removes both manifes
   store.save(p);
   assert.equal(Object.hasOwn(service.manifest(p).watchState, 'push'), false);
   assert.equal(Object.hasOwn(service.manifest(p).watchState, 'pull'), false);
-  assert.throws(() => service.enqueue(p, 'series', event({ id: 'new' })), /consentement/);
+  assert.throws(() => service.enqueue(p, 'series', event({ id: 'new' })), /consent/);
   await service.deliver(jobs(store)[0]);
   assert.equal(jobs(store)[0].status, 'blocked');
   assert.equal(calls, 0);
   p.consent = true; p.pushProviders = []; store.save(p);
   await service.deliver(jobs(store)[0]);
   assert.equal(calls, 0);
-  assert.equal(jobs(store)[0].error, 'Synchronisation désactivée');
+  assert.equal(jobs(store)[0].error, 'Sync disabled');
 });
 
 test('consent revoked during a write keeps its checkpoint but stops later remote operations', async t => {
@@ -214,7 +299,7 @@ test('retry preserves connection order while other profiles can progress and che
     sent.push(e.id);
   } });
   p.pullProvider = null; store.save(p);
-  const other = store.create({ name: 'Autre', consent: true, pushProviders: ['pmdb'], pullProvider: null });
+  const other = store.create({ name: 'Other', consent: true, pushProviders: ['pmdb'], pullProvider: null });
   store.connect(other.id, 'pmdb', { token: 'pm-other' });
   service.enqueue(p, 'series', event({ id: 'retry-first' }));
   service.enqueue(p, 'series', event({ id: 'later-same-connection', positionMs: 6000 }));
@@ -250,7 +335,7 @@ test('disk-backed queue and completed checkpoints survive a process restart', as
     },
   };
   let service = new TrackerService(store, settings, { pmdb: provider, simkl: { ...provider, name: 'simkl' } });
-  const p = store.create({ name: 'Persistant', consent: true, pushProviders: ['pmdb'], pullProvider: null });
+  const p = store.create({ name: 'Persistent', consent: true, pushProviders: ['pmdb'], pullProvider: null });
   store.connect(p.id, 'pmdb', { token: 'pm-persistent' });
   const revision = store.connectionRevision(p.id, 'pmdb');
   service.enqueue(p, 'series', event({ id: 'restart-event', event: 'played' }));
@@ -311,7 +396,7 @@ test('a future retry or blocked queue head does not prevent periodic refresh for
 });
 
 test('a revoked upstream credential returns 401 to AIO until a successful reconnect clears the auth error', async t => {
-  const { store, service, p } = setup(t, { push: async () => { throw new UpstreamError('API distante : HTTP 401', 401); } });
+  const { store, service, p } = setup(t, { push: async () => { throw new UpstreamError('Upstream API: HTTP 401', 401); } });
   service.enqueue(p, 'series', event({ id: 'rejected-by-provider' }));
   await service.deliver(jobs(store)[0]);
   assert.equal(jobs(store)[0].status, 'blocked');

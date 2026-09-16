@@ -14,7 +14,7 @@ WORKDIR /app
 # A new named volume inherits this ownership, so SQLite works as the node user.
 RUN mkdir -p /app/data && chmod 700 /app/data && chown node:node /app/data
 
-COPY --chown=node:node package.json ./
+COPY --chown=node:node package.json LICENSE ./
 COPY --chown=node:node src ./src
 COPY --chown=node:node public ./public
 

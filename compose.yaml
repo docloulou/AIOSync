@@ -1,6 +1,6 @@
 services:
   tracker:
-    image: aiostreams-tracker-bridge:local
+    image: aiosync:local
     pull_policy: build
     build:
       context: .

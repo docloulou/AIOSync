@@ -8,24 +8,24 @@ const argument = process.argv[2] ?? 'http://localhost:7000';
 
 try {
   if (process.argv.length > 3) {
-    throw new Error('Usage : node scripts/generate-env.mjs [https://tracker.example.com]');
+    throw new Error('Usage: node scripts/generate-env.mjs [https://tracker.example.com]');
   }
   const origin = new URL(argument);
   if (!['http:', 'https:'].includes(origin.protocol)
       || origin.username || origin.password || origin.search || origin.hash
       || origin.pathname !== '/') {
-    throw new Error('L’URL doit être une origine HTTP(S), sans chemin, identifiants ni paramètres.');
+    throw new Error('The URL must be an HTTP(S) origin without a path, credentials, or parameters.');
   }
   const contents = (await readFile(template, 'utf8'))
     .replace('GLOBAL_API_KEY=REPLACE_WITH_RANDOM_GLOBAL_API_KEY', `GLOBAL_API_KEY=${randomBytes(32).toString('base64url')}`)
     .replace('ENCRYPTION_KEY=REPLACE_WITH_64_HEX_CHARACTERS', `ENCRYPTION_KEY=${randomBytes(32).toString('hex')}`)
     .replace(/^PUBLIC_BASE_URL=.*$/m, `PUBLIC_BASE_URL=${origin.origin}`);
   await writeFile(target, contents, { flag: 'wx', mode: 0o600 });
-  console.log(`Créé : ${fileURLToPath(target)}`);
-  console.log('Ajoutez vos identifiants Simkl/PublicMetaDB, puis démarrez le service.');
+  console.log(`Created: ${fileURLToPath(target)}`);
+  console.log('Add your SIMKL/PublicMetaDB credentials, then start the service.');
 } catch (error) {
   console.error(error?.code === 'EEXIST'
-    ? 'Le fichier .env existe déjà : aucune modification effectuée.'
-    : `Création impossible : ${error.message}`);
+    ? 'The .env file already exists; no changes were made.'
+    : `Could not create configuration: ${error.message}`);
   process.exitCode = 1;
 }

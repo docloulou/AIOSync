@@ -41,7 +41,7 @@ export class HttpClient {
     let response: Response;
     try {
       response = await (this.options.fetch ?? fetch)(url, {...init,headers,redirect:'error',signal:init.signal ?? AbortSignal.timeout(12000)});
-    } catch { throw new UpstreamError('API inaccessible ou délai dépassé',502); }
+    } catch { throw new UpstreamError('API unavailable or request timed out',502); }
     if(!response.ok) {
       const raw=response.headers.get('retry-after');
       const retry=raw ? (/^\d+$/.test(raw)?Number(raw)*1000:Math.max(0,Date.parse(raw)-Date.now())) : 0;
@@ -49,15 +49,15 @@ export class HttpClient {
       // Inspect only this known code; never expose arbitrary upstream bodies.
       if(response.status===400&&url.origin==='https://api.simkl.com'){
         let error:any;try{error=await response.json();}catch{}
-        if(error?.error==='rate_limit')throw new UpstreamError('SIMKL occupé, nouvelle tentative différée',429,Math.max(retry||0,2000));
+        if(error?.error==='rate_limit')throw new UpstreamError('SIMKL is busy; retry deferred',429,Math.max(retry||0,2000));
       }
-      throw new UpstreamError(`API distante : HTTP ${response.status}`,response.status,retry || 0);
+      throw new UpstreamError(`Upstream API: HTTP ${response.status}`,response.status,retry || 0);
     }
     if(response.status===204) return undefined;
     try {
       const body=await response.text();
       if(body.length>100_000_000) throw new Error('oversized');
       return body ? JSON.parse(body) : undefined;
-    } catch { throw new UpstreamError('Réponse JSON distante invalide',502); }
+    } catch { throw new UpstreamError('Invalid upstream JSON response',502); }
   }
 }
