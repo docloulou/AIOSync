@@ -12,7 +12,7 @@ export function loadSettings(env: NodeJS.ProcessEnv = process.env) {
   return {apiKey,encryptionKey,baseUrl:base.origin,port,host:env.HOST || '0.0.0.0',
     dataDir:env.DATA_DIR || './data',simklClientId:env.SIMKL_CLIENT_ID || '',
     simklClientSecret:env.SIMKL_CLIENT_SECRET || '',pmdbApiKey:env.PMDB_API_KEY || '',
-    simklAccessToken:env.SIMKL_ACCESS_TOKEN || '',
+    simklAccessToken:env.SIMKL_ACCESS_TOKEN || '',mdblistApiKey:env.MDBLIST_API_KEY || '',
     refreshSeconds:Math.max(30,Number(env.SYNC_INTERVAL_SECONDS)||300),
     maxPullBytes:positive('MAX_PULL_BYTES',4_900_000),
     maxResumeItems:positive('MAX_RESUME_ITEMS',5000),

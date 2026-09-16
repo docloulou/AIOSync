@@ -17,7 +17,7 @@ function setup(t: test.TestContext, overrides: Partial<Provider> = {}) {
   const store = new Store(':memory:', settings.encryptionKey);
   t.after(() => store.close());
   const provider: Provider = { name: 'pmdb', validate: async () => {}, push: async () => {}, pull: async () => state(), ...overrides };
-  const service = new TrackerService(store, settings, { pmdb: provider, simkl: { ...provider, name: 'simkl' } });
+  const service = new TrackerService(store, settings, { pmdb: provider, simkl: { ...provider, name: 'simkl' }, mdblist: { ...provider, name: 'mdblist' } });
   const p = store.create({ name: 'Test account', pushProviders: ['pmdb'], pullProvider: 'pmdb', consent: true });
   store.connect(p.id, 'pmdb', { token: 'pm-account-one' });
   return { store, service, provider, p };
@@ -75,11 +75,11 @@ test('service never publishes an unseen watched version during an upstream outag
 });
 
 test('start keeps a local resume through an empty provider pull and still delivers native events', async t => {
-  for(const name of ['simkl','pmdb'] as const){
+  for(const name of ['simkl','pmdb','mdblist'] as const){
     const delivered:string[]=[];
     const {store,service,p}=setup(t,{push:async e=>{delivered.push(e.event);}});
     p.pushProviders=[name];p.pullProvider=name;store.save(p);
-    if(name==='simkl')store.connect(p.id,name,{token:'simkl-account'});
+    if(name!=='pmdb')store.connect(p.id,name,{token:`${name}-account`});
     const e=event({id:`${name}-seek`,event:'start',positionMs:12000});
     service.enqueue(p,'series',e);
     await service.deliver(jobs(store)[0]);
@@ -275,9 +275,12 @@ test('consent revoked during a write keeps its checkpoint but stops later remote
   assert.equal(secondCalls, 0);
 });
 
-test('PMDB bulk jobs skip a video superseded by a newer single mark', async t => {
+test('PMDB and MDBList bulk jobs skip a video superseded by a newer single mark', async t => {
+  for (const providerName of ['pmdb', 'mdblist'] as const) {
   const sent: WatchEvent[] = [];
   const { store, service, p } = setup(t, { push: async e => { sent.push(e); } });
+  p.pushProviders = [providerName]; store.save(p);
+  if (providerName === 'mdblist') store.connect(p.id, providerName, { token: 'mdb-account' });
   const at = event().at;
   service.enqueue(p, 'series', event({ id: 'b|show|1', event: 'played', scope: 'series', season: null,
     videos: [{ videoId: 'tt1234567:1:1', season: 1, episode: 1 }, { videoId: 'tt1234567:1:2', season: 1, episode: 2 }], at }));
@@ -285,6 +288,7 @@ test('PMDB bulk jobs skip a video superseded by a newer single mark', async t =>
   for (const job of jobs(store)) await service.deliver(job);
   assert.deepEqual(sent.map(e => [e.event, e.videoId]), [['played', 'tt1234567:1:2'], ['unplayed', 'tt1234567:1:1']]);
   assert.ok(jobs(store).every(job => job.status === 'done'));
+  }
 });
 
 test('retry preserves connection order while other profiles can progress and checkpoints avoid repeating a write', async t => {
@@ -334,7 +338,7 @@ test('disk-backed queue and completed checkpoints survive a process restart', as
       });
     },
   };
-  let service = new TrackerService(store, settings, { pmdb: provider, simkl: { ...provider, name: 'simkl' } });
+  let service = new TrackerService(store, settings, { pmdb: provider, simkl: { ...provider, name: 'simkl' }, mdblist: { ...provider, name: 'mdblist' } });
   const p = store.create({ name: 'Persistent', consent: true, pushProviders: ['pmdb'], pullProvider: null });
   store.connect(p.id, 'pmdb', { token: 'pm-persistent' });
   const revision = store.connectionRevision(p.id, 'pmdb');
@@ -346,7 +350,7 @@ test('disk-backed queue and completed checkpoints survive a process restart', as
   store.db.prepare("UPDATE jobs SET status='running'").run();
   store.close();
   store = new Store(directory, settings.encryptionKey);
-  service = new TrackerService(store, settings, { pmdb: provider, simkl: { ...provider, name: 'simkl' } });
+  service = new TrackerService(store, settings, { pmdb: provider, simkl: { ...provider, name: 'simkl' }, mdblist: { ...provider, name: 'mdblist' } });
   assert.equal(store.connectionRevision(p.id, 'pmdb'), revision);
   assert.equal(store.credentials(p.id, 'pmdb')?.token, 'pm-persistent');
   assert.equal(jobs(store)[0].status, 'pending');

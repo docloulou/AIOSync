@@ -1,13 +1,13 @@
 # AIOSync
 
-Sync Jellyfin watch history and playback progress with **SIMKL** and **PublicMetaDB** through the [AIOStreams `feat/jellyfin` branch](https://github.com/Viren070/AIOStreams/tree/feat/jellyfin).
+Sync Jellyfin watch history and playback progress with **SIMKL**, **PublicMetaDB** and **MDBList** through the [AIOStreams `feat/jellyfin` branch](https://github.com/Viren070/AIOStreams/tree/feat/jellyfin).
 
 AIOSync implements the [`watch_state` v2 addon resource](https://github.com/Viren070/AIOStreams/blob/feat/jellyfin/packages/docs/content/docs/reference/watch-state-resource.mdx). Install it in AIOStreams alongside your metadata and stream addons. It does not provide streams or track playback directly from a standalone Stremio client.
 
 - Multiple profiles, each with its own accounts and addon URL.
-- Push to SIMKL, PublicMetaDB, or both; choose one pull source per profile.
+- Push to any combination of SIMKL, PublicMetaDB and MDBList; choose one pull source per profile.
 - Start, pause, stop, watched/unwatched events, and bulk episode updates.
-- SIMKL OAuth or access tokens; PublicMetaDB personal API keys.
+- SIMKL OAuth or access tokens; PublicMetaDB and MDBList personal API keys.
 - Persistent SQLite queue and snapshots, encrypted provider credentials.
 - Shared administration protected by a global API key.
 
@@ -47,12 +47,13 @@ See [`.env.example`](.env.example) for all settings.
 | `SIMKL_CLIENT_SECRET` | SIMKL application secret, required for OAuth. |
 | `SIMKL_ACCESS_TOKEN` | Optional default user token, selectable when connecting a profile. |
 | `PMDB_API_KEY` | Optional default PublicMetaDB personal API key. |
+| `MDBLIST_API_KEY` | Optional default MDBList personal API key. |
 | `SYNC_INTERVAL_SECONDS` | Remote snapshot refresh and cache freshness, default `300`, minimum `30`. Does not delay push events; `0` uses the default. |
 | `HOST_BIND`, `HOST_PORT` | Compose host binding, default `127.0.0.1` and `7000`. |
 
 For SIMKL OAuth, register `https://tracker.example.com/oauth/simkl/callback` as your application's redirect URI, using the same origin as `PUBLIC_BASE_URL`. Each profile connects its own account using the shared application. You can also enter an existing access token.
 
-For PublicMetaDB, create a personal key in **Settings → API** and enter it in the profile. This API does not require an OAuth client ID or secret.
+For PublicMetaDB, create a personal key in **Settings → API**. For MDBList, use [Preferences → API](https://mdblist.com/preferences/#api). Enter the key in each profile, or use the optional server default. Neither provider needs an OAuth client ID or secret.
 
 Create a profile, connect its accounts, select push destinations and one pull source, then enable synchronization consent. Copy the profile's manifest URL into AIOStreams' custom addons. To switch accounts, disconnect the existing provider first; this clears its queued work and local state.
 
@@ -69,7 +70,7 @@ WATCH_STATE_PULL_ENABLED=true
 
 If AIOStreams accesses the addon through an internal address, also set `WATCH_STATE_ALLOW_PRIVATE_URLS=true`. To allow background pulls for inactive configurations, set `WATCH_STATE_PULL_ACTIVE_WITHIN_HOURS=0`.
 
-Your metadata addons must resolve the IDs returned by the tracker. PublicMetaDB uses TMDB IDs; SIMKL may also return IMDb or native anime IDs. Episode numbering is not guessed or converted without a verified mapping.
+Your metadata addons must resolve the IDs returned by the tracker. PublicMetaDB uses TMDB IDs; SIMKL may also return IMDb or native anime IDs; MDBList prefers IMDb with TMDB/TVDB fallbacks. Episode numbering is not guessed or converted without a verified mapping.
 
 Compatibility was reviewed against AIOStreams commit [`e3879da`](https://github.com/Viren070/AIOStreams/tree/e3879da60f65c741ada8375559903aa58a51a707). That branch may change. Its own pull schedule determines when imported changes appear in Jellyfin; the manifest's cache TTL does not guarantee an end-to-end refresh deadline.
 
@@ -79,9 +80,10 @@ AIOSync preserves the last useful resume point when a start/seek event lacks rel
 
 - **SIMKL:** native scrobbling distinguishes active playback from paused resume sessions. Starting playback can remove the paused entry from SIMKL's own resume list. AIOSync preserves its local resume state, but does not change SIMKL's interface. Incomplete stops use `/scrobble/pause`; completed events use `/sync/history` to respect AIOStreams' completion decision.
 - **PublicMetaDB:** resume points are supported from **2% inclusive to 80% exclusive**. Valid starts update the resume point; missing or unsupported progress leaves the previous remote point intact. Other positions are retained locally when usable, so apps reading PublicMetaDB directly may show the older point.
+- **MDBList:** native `/scrobble/start`, `/scrobble/pause` and `/scrobble/stop`. Pause and stop automatically mark a title watched at **80%**, so incomplete positions at or above that threshold stay local until AIOStreams confirms completion. Remote playback changes are read on every refresh; history is cached using MDBList activity timestamps. Account API quotas apply.
 - Bulk marks affect only the listed episodes. The service synchronizes watched state, not an exact rewatch counter. A failed or incomplete pull never becomes an empty history.
 
-More details: [SIMKL](docs/simkl.md), [PublicMetaDB](docs/pmdb.md).
+More details: [SIMKL](docs/simkl.md), [PublicMetaDB](docs/pmdb.md), [MDBList](docs/mdblist.md).
 
 ## Development and maintenance
 

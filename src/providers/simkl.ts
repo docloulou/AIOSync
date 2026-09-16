@@ -153,7 +153,7 @@ export class SimklProvider implements Provider {
     let client = this.clients.get(credentials.token);
     if (!client) {
       client = new HttpClient('https://api.simkl.com', {
-        headers: { Authorization: `Bearer ${credentials.token}`, 'User-Agent': 'AIOSync/1.0.1', 'Content-Type': 'application/json' },
+        headers: { Authorization: `Bearer ${credentials.token}`, 'User-Agent': 'AIOSync/1.1.0', 'Content-Type': 'application/json' },
         fetch: this.fetcher, intervalMs: this.fetcher ? 0 : 1100, limiterKey: `simkl:${credentials.token}`,
       });
       this.clients.set(credentials.token, client);
@@ -161,7 +161,7 @@ export class SimklProvider implements Provider {
     return client;
   }
   private path(path: string, params: Record<string, string> = {}): string {
-    return `${path}?${new URLSearchParams({ client_id: this.clientId, 'app-name': 'AIOSync', 'app-version': '1.0.1', ...params })}`;
+    return `${path}?${new URLSearchParams({ client_id: this.clientId, 'app-name': 'AIOSync', 'app-version': '1.1.0', ...params })}`;
   }
   private async serial<T>(token: string, operation: () => Promise<T>): Promise<T> {
     const before = this.operations.get(token) ?? Promise.resolve();
@@ -269,7 +269,7 @@ export class SimklProvider implements Provider {
         if (response[bucket] !== undefined && !Array.isArray(response[bucket])) throw new Error('SIMKL: invalid history.');
         for (const row of response[bucket] ?? []) {
           const value = movieIds(row);
-          if (!value.simkl) throw new Error('SIMKL : historique sans identifiant stable.');
+          if (!value.simkl) throw new Error('SIMKL: history entry has no stable identifier.');
           if (!['watching', 'plantowatch', 'hold', 'completed', 'dropped'].includes(row.status)) throw new UpstreamError('SIMKL: missing or invalid watch status.', 502);
           cache.entries.set(`${bucket}:${value.simkl}`, { bucket, row });
         }

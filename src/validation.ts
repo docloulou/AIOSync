@@ -1,4 +1,4 @@
-import type { MediaType, WatchEvent } from './types.ts';
+import type { MediaType, ProviderName, WatchEvent } from './types.ts';
 export class InputError extends Error { status=400; }
 const validId=(x:unknown)=>typeof x==='string'&&x.length>0&&x.length<=512&&!/[\u0000-\u0020/\\?#]/.test(x);
 const ordinal=(x:unknown)=>Number.isInteger(x)&&Number(x)>=0&&Number(x)<=1_000_000;
@@ -29,8 +29,8 @@ export function eventFrom(body:any,type:MediaType,pathId:string):WatchEvent {
 }
 export function profileFields(b:any) {
   if(!b||typeof b.name!=='string'||!b.name.trim()||b.name.length>100) throw new InputError('Name is required (100 characters maximum)');
-  if(![null,'simkl','pmdb'].includes(b.pullProvider)) throw new InputError('Invalid pull source');
-  if(!Array.isArray(b.pushProviders)||b.pushProviders.some((x:any)=>!['simkl','pmdb'].includes(x))) throw new InputError('Invalid push destinations');
+  if(![null,'simkl','pmdb','mdblist'].includes(b.pullProvider)) throw new InputError('Invalid pull source');
+  if(!Array.isArray(b.pushProviders)||b.pushProviders.some((x:any)=>!['simkl','pmdb','mdblist'].includes(x))) throw new InputError('Invalid push destinations');
   if(typeof b.consent!=='boolean') throw new InputError('Consent is required');
-  return {name:b.name.trim(),pullProvider:b.pullProvider,pushProviders:[...new Set(b.pushProviders)] as ('simkl'|'pmdb')[],consent:b.consent};
+  return {name:b.name.trim(),pullProvider:b.pullProvider,pushProviders:[...new Set(b.pushProviders)] as ProviderName[],consent:b.consent};
 }

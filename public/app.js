@@ -1,7 +1,8 @@
+const providerNames = { simkl: 'SIMKL', pmdb: 'PMDB', mdblist: 'MDBList' };
 'use strict';
 
 const $ = (id) => document.getElementById(id);
-const state = { authenticated: false, simklOAuth: false, simklEnvToken: false, pmdbEnvToken: false, profiles: [] };
+const state = { authenticated: false, simklOAuth: false, simklEnvToken: false, pmdbEnvToken: false, mdblistEnvToken: false, profiles: [] };
 const drafts = new Map();
 let loadSequence = 0;
 
@@ -93,7 +94,7 @@ function profilePath(profile, suffix = '') {
 }
 
 function connectionPanel(profile, provider) {
-  const name = provider === 'simkl' ? 'SIMKL' : 'PMDB';
+  const name = providerNames[provider];
   const connection = profile.connections?.[provider];
   const connected = Boolean(connection?.connected);
   const panel = node('div', { className: 'connection' });
@@ -128,17 +129,17 @@ function connectionPanel(profile, provider) {
   if (provider === 'simkl' && !state.simklOAuth) {
     panel.append(node('p', { text: 'SIMKL OAuth is not configured on this server. You can connect with an access token.' }));
   }
-  const envToken = provider === 'simkl' ? state.simklEnvToken : state.pmdbEnvToken;
+  const envToken = state[`${provider}EnvToken`];
   if (envToken) {
     panel.append(node('p', { text: `Leave this field empty to use the ${name} token configured on the server.` }));
   }
   const token = node('input', {
     type: 'password', name: `${provider}Token`, autocomplete: 'off', spellcheck: false,
     required: !envToken,
-    placeholder: envToken ? 'Default server token' : 'Personal access token',
+    placeholder: envToken ? 'Default server credential' : provider === 'simkl' ? 'Personal access token' : 'Personal API key',
   });
   const form = node('form', { className: 'connection-form' });
-  form.append(field(provider === 'simkl' ? 'SIMKL access token (access_token)' : 'PMDB token', token));
+  form.append(field(provider === 'simkl' ? 'SIMKL access token (access_token)' : `${name} API key`, token));
   form.append(node('button', { type: 'submit', className: 'button button-secondary', text: 'Connect' }));
   form.addEventListener('submit', (event) => {
     event.preventDefault();
@@ -161,14 +162,14 @@ function routingPanel(profile) {
   const form = node('form', { className: 'routing-form' });
   const name = node('input', { type: 'text', value: values.name, name: 'name', required: true, maxLength: 100, autocomplete: 'off' });
   const pull = node('select', { name: 'pullProvider', 'aria-label': 'Watch history pull source' });
-  [['', 'None — pull disabled'], ['simkl', 'SIMKL'], ['pmdb', 'PMDB']].forEach(([value, text]) => {
+  [['', 'None — pull disabled'], ['simkl', 'SIMKL'], ['pmdb', 'PMDB'], ['mdblist', 'MDBList']].forEach(([value, text]) => {
     pull.append(node('option', { value, text, selected: value === (values.pullProvider || '') }));
   });
   const push = node('fieldset', { className: 'push-fieldset' }, [node('legend', { text: '↑ Push playback events to' })]);
   const options = node('div', { className: 'push-options' });
-  const pushControls = ['simkl', 'pmdb'].map((provider) => {
+  const pushControls = Object.keys(providerNames).map((provider) => {
     const input = node('input', { type: 'checkbox', name: 'pushProvider', value: provider, checked: (values.pushProviders || []).includes(provider) });
-    options.append(node('label', { className: 'checkbox-label' }, [input, node('span', { text: provider.toUpperCase() })]));
+    options.append(node('label', { className: 'checkbox-label' }, [input, node('span', { text: providerNames[provider] })]));
     return input;
   });
   push.append(options);
@@ -282,7 +283,7 @@ function diagnosticsPanel(profile) {
     const states = { pending: 'Pending', running: 'Running', done: 'Done', blocked: 'Blocked', failed: 'Failed', cancelled: 'Cancelled' };
     const list = node('ul', { className: 'jobs-list' });
     for (const job of jobs) {
-      const label = `${String(job.provider || '').toUpperCase()} · ${String(job.event || 'event')}`;
+      const label = `${providerNames[job.provider] || String(job.provider || '')} · ${String(job.event || 'event')}`;
       const row = node('li', {}, [node('div', { className: 'job-heading' }, [
         node('strong', { text: label }),
         node('span', { className: `badge ${['blocked', 'failed'].includes(job.status) ? 'badge-error' : job.status === 'done' ? 'badge-success' : ''}`, text: states[job.status] || String(job.status) }),
@@ -335,7 +336,7 @@ function renderProfile(profile) {
     });
   }, 'button button-danger button-small');
   article.append(node('div', { className: 'profile-header' }, [title, remove]));
-  const connectionSection = node('section', {}, [node('h3', { className: 'section-label', text: '01 / CONNECTED ACCOUNTS' }), node('div', { className: 'connections' }, [connectionPanel(profile, 'simkl'), connectionPanel(profile, 'pmdb')])]);
+  const connectionSection = node('section', {}, [node('h3', { className: 'section-label', text: '01 / CONNECTED ACCOUNTS' }), node('div', { className: 'connections' }, Object.keys(providerNames).map(provider => connectionPanel(profile, provider)))]);
   article.append(node('div', { className: 'profile-content' }, [connectionSection, routingPanel(profile)]));
   if (profile.syncError) article.append(node('p', { className: 'profile-error', text: `Pull failed: ${profile.syncError}` }));
   article.append(installPanel(profile), diagnosticsPanel(profile), profileFooter(profile));
@@ -351,7 +352,7 @@ async function loadProfiles() {
   else $('profiles').replaceChildren(node('div', { className: 'empty-state' }, [
     node('span', { className: 'empty-symbol', text: '↔', 'aria-hidden': 'true' }),
     node('h2', { text: 'Create your first profile' }),
-    node('p', { text: 'Create a profile above, then connect SIMKL, PMDB or both.' }),
+    node('p', { text: 'Create a profile above, then connect SIMKL, PMDB or MDBList.' }),
   ]));
 }
 

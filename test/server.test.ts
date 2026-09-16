@@ -43,11 +43,11 @@ async function fixture(t: TestContext) {
     GLOBAL_API_KEY: 'test-global-api-key-at-least-thirty-two-characters',
     ENCRYPTION_KEY: 'ab'.repeat(32), PUBLIC_BASE_URL: 'http://127.0.0.1:7000',
     SIMKL_CLIENT_ID: 'test-client-id', SIMKL_CLIENT_SECRET: 'test-client-secret',
-    SIMKL_ACCESS_TOKEN: 'simkl-env-token-private', PMDB_API_KEY: 'pmdb-env-token-private',
+    SIMKL_ACCESS_TOKEN: 'simkl-env-token-private', PMDB_API_KEY: 'pmdb-env-token-private', MDBLIST_API_KEY: 'mdblist-env-key-private',
     SYNC_INTERVAL_SECONDS: '3600',
   });
   const store = new Store(':memory:', settings.encryptionKey);
-  const providers = { simkl: new FakeProvider('simkl'), pmdb: new FakeProvider('pmdb') };
+  const providers = { simkl: new FakeProvider('simkl'), pmdb: new FakeProvider('pmdb'), mdblist: new FakeProvider('mdblist') };
   const app = createApp(settings, { store, providers });
   await new Promise<void>((resolve) => app.server.listen(0, '127.0.0.1', resolve));
   settings.baseUrl = `http://127.0.0.1:${(app.server.address() as AddressInfo).port}`;
@@ -114,6 +114,7 @@ test('HTTP admin auth: cookie session, bearer, origin checks, logout and securit
   assert.equal(status.data.authenticated, false);
   assert.equal(status.data.simklOAuth, false);
   assert.equal(status.data.pmdbEnvToken, false);
+  assert.equal(status.data.mdblistEnvToken, false);
   assert.equal((await f.request('/api/profiles', { auth: false })).status, 401);
   assert.equal((await f.request('/api/login', { method: 'POST', body: { apiKey: 'wrong' }, auth: false })).status, 401);
   assert.equal((await f.request('/api/login', { method: 'POST', body: { apiKey: f.settings.apiKey }, auth: false, origin: 'https://evil.example' })).status, 403);
@@ -123,6 +124,7 @@ test('HTTP admin auth: cookie session, bearer, origin checks, logout and securit
   assert.equal(authorized.data.simklOAuth, true);
   assert.equal(authorized.data.simklEnvToken, true);
   assert.equal(authorized.data.pmdbEnvToken, true);
+  assert.equal(authorized.data.mdblistEnvToken, true);
   assert.equal((await f.request('/api/profiles', { auth: false, cookie })).status, 200);
   assert.equal((await f.request('/api/profiles')).status, 200);
   assert.equal((await f.request('/api/profiles', { method: 'POST', auth: false, cookie, origin: 'https://evil.example', body: {} })).status, 403);
@@ -276,11 +278,11 @@ test('HTTP job diagnostics expose timing and media fields only to authenticated 
   }
 });
 
-test('HTTP malformed and bulk events: reject invalid atomic input, split PMDB episodes and preserve SIMKL bulk', async (t) => {
+test('HTTP malformed and bulk events: reject invalid atomic input, split PMDB/MDBList episodes and preserve SIMKL bulk', async (t) => {
   const f = await fixture(t);
   const p = await f.profile();
-  await f.connect(p.id, 'simkl', 's'); await f.connect(p.id, 'pmdb', 'p');
-  await f.configure(p.id, { pushProviders: ['simkl', 'pmdb'] });
+  await f.connect(p.id, 'simkl', 's'); await f.connect(p.id, 'pmdb', 'p'); await f.connect(p.id, 'mdblist', 'm');
+  await f.configure(p.id, { pushProviders: ['simkl', 'pmdb', 'mdblist'] });
   const moviePath = f.addon(p, 'watch_state/push/movie/tt1234567.json');
   assert.equal((await f.request(moviePath, { method: 'POST', auth: false, raw: '{' })).status, 400);
   assert.equal((await f.request(moviePath, { method: 'POST', auth: false, body: { ...movieEvent(), videoId: 'tt9999999' } })).status, 400);
@@ -296,9 +298,39 @@ test('HTTP malformed and bulk events: reject invalid atomic input, split PMDB ep
   await f.settle();
   assert.equal(f.providers.simkl.pushes.length, 1);
   assert.equal(f.providers.simkl.pushes[0].event.videos?.length, 2);
+  assert.equal(f.providers.mdblist.pushes.length, 2);
+  assert.deepEqual(f.providers.mdblist.pushes.map(p => p.event), f.providers.pmdb.pushes.map(p => p.event));
   assert.equal(f.providers.pmdb.pushes.length, 2);
   assert.deepEqual(f.providers.pmdb.pushes.map((p) => p.event.videoId), ['tt7654321:1:1', 'tt7654321:1:2']);
   assert.ok(f.providers.pmdb.pushes.every((p) => p.event.scope === 'episode' && !p.event.videos));
+});
+
+test('HTTP MDBList supports environment credentials, independent profiles, pull routing and safe disconnect', async t => {
+  const f = await fixture(t);
+  const alice = await f.profile('Alice MDBList'), bob = await f.profile('Bob MDBList');
+  await f.connect(alice.id, 'mdblist');
+  await f.connect(bob.id, 'mdblist', 'bob-mdblist-private');
+  assert.deepEqual(f.providers.mdblist.validations, [f.settings.mdblistApiKey, 'bob-mdblist-private']);
+  await f.configure(alice.id, { pullProvider: 'mdblist', pushProviders: ['mdblist'] });
+  await f.configure(bob.id, { pullProvider: 'mdblist', pushProviders: ['mdblist'] });
+  f.providers.mdblist.snapshots.set(f.settings.mdblistApiKey, { ...emptySnapshot(), items: [{ type: 'movie', metaId: 'tt1234567', videoId: 'tt1234567', progressPercent: 40, at: 1789542000 }] });
+  await f.service.refresh(f.store.profile(alice.id)!);
+  await f.service.refresh(f.store.profile(bob.id)!);
+  const pull = await f.request(f.addon(alice, 'watch_state/pull.json'), { auth: false });
+  assert.equal(pull.status, 200);
+  assert.equal(pull.data.items[0].progressPercent, 40);
+  assert.deepEqual((await f.request(f.addon(bob, 'watch_state/pull.json'), { auth: false })).data.items, []);
+  const list = await f.request('/api/profiles');
+  for (const secret of [f.settings.mdblistApiKey, 'bob-mdblist-private']) {
+    assert.equal(list.text.includes(secret), false);
+    assert.equal(JSON.stringify(f.store.db.prepare('SELECT * FROM connections').all()).includes(secret), false);
+  }
+  assert.equal((await f.request(`/api/profiles/${alice.id}/connections/mdblist`, { method: 'POST', body: { token: 'new-account' } })).status, 400);
+  assert.equal((await f.request(`/api/profiles/${alice.id}/connections/mdblist`, { method: 'DELETE' })).status, 200);
+  const current = f.store.profile(alice.id)!;
+  assert.equal(current.pullProvider, null); assert.deepEqual(current.pushProviders, []);
+  assert.equal(f.store.credentials(alice.id, 'mdblist'), undefined);
+  assert.equal(f.store.credentials(bob.id, 'mdblist')?.token, 'bob-mdblist-private');
 });
 
 test('HTTP consent revocation removes capabilities, rejects new events and prevents pending delivery', async (t) => {

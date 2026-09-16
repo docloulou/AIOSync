@@ -1,6 +1,6 @@
 {
   "name": "aiostreams-tracker-bridge",
-  "version": "1.0.1",
+  "version": "1.1.0",
   "private": true,
   "type": "module",
   "engines": {
@@ -12,7 +12,7 @@
     "test": "node --test test/*.test.ts",
     "check": "node scripts/check.mjs"
   },
-  "description": "SIMKL and PublicMetaDB watch-state addon for AIOStreams Jellyfin",
+  "description": "SIMKL, PublicMetaDB and MDBList watch-state addon for AIOStreams Jellyfin",
   "license": "MIT",
   "repository": {
     "type": "git",

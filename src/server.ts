@@ -8,6 +8,7 @@ import { Store } from './store.ts';
 import { TrackerService } from './service.ts';
 import { SimklProvider } from './providers/simkl.ts';
 import { PmdbProvider } from './providers/pmdb.ts';
+import { MdblistProvider } from './providers/mdblist.ts';
 import { capability, equal, hash, randomToken } from './security.ts';
 import { eventFrom, InputError, profileFields } from './validation.ts';
 import { HttpClient, UpstreamError } from './http.ts';
@@ -24,7 +25,7 @@ function sessionToken(req:IncomingMessage){const v=/(?:^|;\s*)tracker_session=([
 
 export function createApp(settings:Settings,options:{store?:Store;providers?:Record<ProviderName,Provider>}={}){
   const store=options.store??new Store(settings.dataDir,settings.encryptionKey);
-  const providers=options.providers??{simkl:new SimklProvider({clientId:settings.simklClientId}),pmdb:new PmdbProvider()};
+  const providers=options.providers??{simkl:new SimklProvider({clientId:settings.simklClientId}),pmdb:new PmdbProvider(),mdblist:new MdblistProvider()};
   const service=new TrackerService(store,settings,providers);
   const attempts=new Map<string,{n:number,reset:number}>();
   const sessionHash=(token:string)=>hash(`${settings.apiKey}\0${token}`);
@@ -43,7 +44,7 @@ export function createApp(settings:Settings,options:{store?:Store;providers?:Rec
     if(url.pathname==='/healthz'&&method==='GET')return json(res,200,{ok:true});
     if(url.pathname==='/manifest.json'&&method==='GET'){
       res.setHeader('Access-Control-Allow-Origin','*');
-      return json(res,200,{id:'org.trackerbridge',version:'1.0.1',name:'AIOSync — SIMKL / PMDB',
+      return json(res,200,{id:'org.trackerbridge',version:'1.1.0',name:'AIOSync — SIMKL / PMDB / MDBList',
         description:'Open the configuration page to connect your accounts and create a personal addon URL.',types:['movie','series'],resources:[],catalogs:[],
         behaviorHints:{configurable:true,configurationRequired:true}});
     }
@@ -77,7 +78,7 @@ export function createApp(settings:Settings,options:{store?:Store;providers?:Rec
       res.setHeader('Set-Cookie',cookie(token,settings.sessionHours*3600));return json(res,200,{authenticated:true});
     }
     if(url.pathname==='/api/status'&&method==='GET'){
-      const auth=authenticated(req);return json(res,200,{authenticated:auth,simklOAuth:auth&&!!(settings.simklClientId&&settings.simklClientSecret),simklEnvToken:auth&&!!settings.simklAccessToken,pmdbEnvToken:auth&&!!settings.pmdbApiKey});
+      const auth=authenticated(req);return json(res,200,{authenticated:auth,simklOAuth:auth&&!!(settings.simklClientId&&settings.simklClientSecret),simklEnvToken:auth&&!!settings.simklAccessToken,pmdbEnvToken:auth&&!!settings.pmdbApiKey,mdblistEnvToken:auth&&!!settings.mdblistApiKey});
     }
     if(url.pathname==='/api/logout'&&method==='POST'){
       store.db.prepare('DELETE FROM sessions WHERE token=?').run(sessionHash(sessionToken(req)));res.setHeader('Set-Cookie',cookie('',0));return json(res,200,{ok:true});
@@ -130,11 +131,11 @@ export function createApp(settings:Settings,options:{store?:Store;providers?:Rec
           const target=new URL('https://simkl.com/oauth/authorize');target.search=new URLSearchParams({client_id:settings.simklClientId,redirect_uri:`${settings.baseUrl}/oauth/simkl/callback`,response_type:'code',state}).toString();
           return json(res,200,{url:target.href});
         }
-        const connect=/^connections\/(simkl|pmdb)$/.exec(action);
+        const connect=/^connections\/(simkl|pmdb|mdblist)$/.exec(action);
         if(connect){
           const provider=connect[1] as ProviderName;
           if(method==='POST'){
-            const b=await body(req);const value=b.token||(provider==='pmdb'?settings.pmdbApiKey:settings.simklAccessToken);
+            const b=await body(req);const value=b.token||({simkl:settings.simklAccessToken,pmdb:settings.pmdbApiKey,mdblist:settings.mdblistApiKey}[provider]);
             if(typeof value!=='string'||!value.trim()||value.length>10000)throw new InputError('Access token required');
             if(provider==='simkl'&&!settings.simklClientId)throw new InputError('SIMKL_CLIENT_ID is required in .env');
             const c={token:value.trim()};const old=store.credentials(p.id,provider);

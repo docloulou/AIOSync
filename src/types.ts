@@ -1,4 +1,4 @@
-export type ProviderName = 'simkl' | 'pmdb';
+export type ProviderName = 'simkl' | 'pmdb' | 'mdblist';
 export type MediaType = 'movie' | 'series';
 export type Credentials = { token: string };
 export type Video = { videoId: string; season?: number | null; episode?: number };

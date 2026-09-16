@@ -15,11 +15,11 @@ GitHub Actions also builds the production container and runs `scripts/docker-smo
 
 ## Live integration checks
 
-Automated tests do not establish that an actual SIMKL/PMDB account, OAuth application, Jellyfin client, or AIOStreams deployment works. After configuring your instance:
+Automated tests do not establish that an actual SIMKL/PMDB/MDBList account, OAuth application, Jellyfin client, or AIOStreams deployment works. After configuring your instance:
 
 1. Connect each provider and check the first pull in the profile diagnostics.
 2. Start a video, seek forward and backward, pause, resume, and stop before completion. Check the received events and their positions.
-3. Check the resume state after the next pull, including restarting playback without a reliable position. SIMKL's active session and paused resume list are distinct; PublicMetaDB cannot store every percentage.
+3. Check the resume state after the next pull, including restarting playback without a reliable position. SIMKL's active session and paused resume list are distinct; PublicMetaDB cannot store every percentage, and MDBList pause/stop auto-completes at 80%. Check MDBList at 79%, 80% and explicit completion, then pause in an external player and verify that the newer remote position is imported.
 4. Mark an item watched, then unwatched; confirm the intended item changes and unrelated episodes remain intact.
 5. Restart AIOSync and confirm that profiles and pending events survive.
 

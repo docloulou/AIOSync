@@ -14,9 +14,9 @@ export class TrackerService {
   constructor(store:Store,settings:Settings,providers:Record<ProviderName,Provider>){this.store=store;this.settings=settings;this.providers=providers;}
   url(p:Profile){return `${this.settings.baseUrl}/addon/${p.id}/${capability(this.settings.encryptionKey,this.settings.apiKey,p.id,p.token)}/manifest.json`;}
   manifest(p:Profile){return {
-    id:`org.trackerbridge.${p.id}`,version:'1.0.1',name:`AIOSync · ${p.name}`,
-    description:'SIMKL / PublicMetaDB watch-state sync for AIOStreams Jellyfin',types:['movie','series'],catalogs:[],
-    resources:[{name:'watch_state',types:['movie','series'],idPrefixes:['tt','imdb:','tmdb:','tvdb:','kitsu:','mal:','anilist:','anidb:','simkl:']}],
+    id:`org.trackerbridge.${p.id}`,version:'1.1.0',name:`AIOSync · ${p.name}`,
+    description:'SIMKL / PublicMetaDB / MDBList watch-state sync for AIOStreams Jellyfin',types:['movie','series'],catalogs:[],
+    resources:[{name:'watch_state',types:['movie','series'],idPrefixes:['tt','imdb:','tmdb:','tvdb:','kitsu:','mal:','anilist:','anidb:','simkl:','trakt:','mdblist:']}],
     behaviorHints:{configurable:true,configurationRequired:false},
     watchState:{version:2,...(p.consent&&p.pushProviders.length?{push:{events:['start','pause','stop','played','unplayed'],bulk:true}}:{}),
       ...(p.pullProvider&&p.consent?{pull:{items:true,watched:true,ttlSeconds:this.settings.refreshSeconds}}:{})}
@@ -40,7 +40,7 @@ export class TrackerService {
     return this.store.transaction(()=>{
       if(db.prepare('SELECT 1 FROM receipts WHERE profile=? AND event_id=?').get(p.id,e.id)) return false;
       const n=(db.prepare("SELECT COUNT(*) n FROM jobs WHERE status IN ('pending','blocked','running')").get() as any).n;
-      const newJobs=p.pushProviders.reduce((sum,provider)=>sum+(provider==='pmdb'&&e.videos?e.videos.length:1),0);
+      const newJobs=p.pushProviders.reduce((sum,provider)=>sum+((provider==='pmdb'||provider==='mdblist')&&e.videos?e.videos.length:1),0);
       if(n+newJobs>50000) throw new UpstreamError('Sync queue is full',429,60000);
       db.prepare('INSERT INTO receipts VALUES(?,?,?)').run(p.id,e.id,Date.now());
       const videos=e.videos??[{videoId:e.videoId!,season:e.season,episode:e.episode}];
@@ -50,7 +50,7 @@ export class TrackerService {
       const broadcast=type==='movie'||(!animeNamespace.test(e.metaId)&&videos.every(v=>
         Number.isInteger(v.season)&&Number(v.season)>=0&&Number.isInteger(v.episode)&&Number(v.episode)>0&&!animeNamespace.test(v.videoId)));
       if(broadcast) {
-        const aliases=[e.metaId,...Object.entries(e.ids??{}).filter(([k])=>['imdb','tmdb','tvdb'].includes(k)).map(([k,v])=>k==='imdb'?v:`${k}:${v}`)];
+        const aliases=[e.metaId,...Object.entries(e.ids??{}).filter(([k])=>['imdb','tmdb','tvdb','trakt','mdblist'].includes(k)).map(([k,v])=>k==='imdb'?v:`${k}:${v}`)];
         for(const alias of aliases) db.prepare('INSERT INTO aliases VALUES(?,?,?,?) ON CONFLICT(profile,type,alias) DO UPDATE SET meta=excluded.meta').run(p.id,type,alias,e.metaId);
         for(const v of videos) {
           const native=aliases.map(alias=>type==='movie'?alias:`${alias}:${v.season}:${v.episode}`);
@@ -59,7 +59,7 @@ export class TrackerService {
         }
       }
       for(const provider of p.pushProviders){
-        const events=provider==='pmdb'&&e.videos?e.videos.map(v=>({...e,...v,scope:'episode' as const,videos:undefined,id:`${e.id}|${v.videoId}`})):[e];
+        const events=(provider==='pmdb'||provider==='mdblist')&&e.videos?e.videos.map(v=>({...e,...v,scope:'episode' as const,videos:undefined,id:`${e.id}|${v.videoId}`})):[e];
         for(const event of events) db.prepare('INSERT INTO jobs(profile,provider,event_id,type,payload,created) VALUES(?,?,?,?,?,?)').run(p.id,provider,event.id,type,JSON.stringify(event),Date.now());
       }
       return true;
@@ -108,7 +108,7 @@ export class TrackerService {
     };
     // A newer single watched/unwatched mark supersedes an older queued bulk entry.
     if(e.videos){e={...e,videos:e.videos.filter(v=>{const m=db.prepare('SELECT at,event_id FROM marks WHERE profile=? AND video=?').get(p.id,v.videoId) as any;return !m||m.event_id===e.id||m.at<e.at;})};if(!e.videos.length){db.prepare("UPDATE jobs SET status='done',error='Superseded by a newer operation' WHERE id=?").run(job.id);return;}}
-    if(job.provider==='pmdb'&&e.id.includes('|')&&e.scope==='episode'){
+    if((job.provider==='pmdb'||job.provider==='mdblist')&&e.id.includes('|')&&e.scope==='episode'){
       const original=e.id.slice(0,-(e.videoId!.length+1));
       const m=db.prepare('SELECT at,event_id FROM marks WHERE profile=? AND video=?').get(p.id,e.videoId!) as any;
       if(m&&m.at>=e.at&&m.event_id!==e.id&&m.event_id!==original){db.prepare("UPDATE jobs SET status='done',error='Superseded by a newer operation' WHERE id=?").run(job.id);return;}
