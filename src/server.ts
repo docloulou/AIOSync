@@ -44,7 +44,7 @@ export function createApp(settings:Settings,options:{store?:Store;providers?:Rec
     if(url.pathname==='/healthz'&&method==='GET')return json(res,200,{ok:true});
     if(url.pathname==='/manifest.json'&&method==='GET'){
       res.setHeader('Access-Control-Allow-Origin','*');
-      return json(res,200,{id:'org.trackerbridge',version:'1.1.5',name:'AIOSync — SIMKL / PMDB / MDBList',
+      return json(res,200,{id:'org.trackerbridge',version:'1.1.6',name:'AIOSync — SIMKL / PMDB / MDBList',
         description:'Open the configuration page to connect your accounts and create a personal addon URL.',types:['movie','series'],resources:[],catalogs:[],
         behaviorHints:{configurable:true,configurationRequired:true}});
     }

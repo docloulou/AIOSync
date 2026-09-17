@@ -104,6 +104,15 @@ test('MDBList keeps safe upstream validation details without exposing the API ke
   });
 });
 
+test('MDBList accepts the live removed bucket returned by unplayed writes', async () => {
+  const { provider, calls } = fixture(c => c.path === '/sync/watched/remove'
+    ? { removed: { movies: 0, shows: 0, seasons: 0, episodes: 0 } }
+    : undefined);
+  await provider.push(event({ event: 'unplayed' }), 'series', credentials, checkpoint());
+  assert.equal(calls.filter(c => c.path === '/sync/watched/remove').length, 1);
+  assert.equal(calls.some(c => c.path === '/scrobble/clear'), true);
+});
+
 test('MDBList accepts decimal-string scrobble confirmations, including HTTP 201 start at zero with played:true', async () => {
   const f = fixture(c => c.path.startsWith('/scrobble/') ? Response.json({
     action: c.path.endsWith('/stop') ? c.body.progress >= 80 ? 'scrobble' : 'pause' : c.path.split('/').at(-1),

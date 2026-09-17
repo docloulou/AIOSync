@@ -80,7 +80,12 @@ function hasContent(value: unknown): boolean {
 }
 function checkHistory(value: unknown, watched: boolean): void {
   const row = object(value, 'history write response');
-  object(row[watched ? 'updated' : 'deleted'], 'history write confirmation');
+  // The published schema calls the unwatch bucket `deleted`, while the live
+  // API currently returns the equivalent bucket as `removed`. Require one of
+  // the documented/observed confirmations; never treat an empty 200 as proof
+  // that a write was applied.
+  const confirmation = watched ? row.updated : row.deleted ?? row.removed;
+  object(confirmation, 'history write confirmation');
   if (hasContent(row.not_found)) throw new UpstreamError('MDBList could not resolve this title or episode', 422);
   if (hasContent(row.errors)) throw new UpstreamError('MDBList did not fully apply the history write', 422);
 }
@@ -125,7 +130,7 @@ export class MdblistProvider implements Provider {
     if (!client) {
       client = new HttpClient('https://api.mdblist.com', {
         fetch: this.fetcher, intervalMs: this.fetcher ? 0 : 100, limiterKey: `mdblist:${credentials.token}`,
-        headers: { 'Content-Type': 'application/json', 'User-Agent': 'AIOSync/1.1.5' },
+        headers: { 'Content-Type': 'application/json', 'User-Agent': 'AIOSync/1.1.6' },
         errorDetail: response => safeErrorDetail(response, credentials.token),
       });
       this.clients.set(credentials.token, client);
