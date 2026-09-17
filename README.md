@@ -13,6 +13,8 @@ AIOSync implements the [`watch_state` v2 addon resource](https://github.com/Vire
 
 ## Quick start
 
+The latest prebuilt multi-architecture image is available at [`ghcr.io/docloulou/aiosync:latest`](https://ghcr.io/docloulou/aiosync). Use this image directly if you do not want to build the container locally; replace the Compose service's `build`/local image with this image.
+
 Requires Docker with Compose v2. Clone this repository and generate your configuration:
 
 ```bash
