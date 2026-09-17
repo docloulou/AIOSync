@@ -21,7 +21,7 @@ async function pace(key: string, interval: number) {
 
 export class HttpClient {
   baseUrl: string;
-  options: {headers?: Record<string,string>; fetch?: typeof fetch; intervalMs?: number; limiterKey?: string};
+  options: {headers?: Record<string,string>; fetch?: typeof fetch; intervalMs?: number; limiterKey?: string; errorDetail?: (response: Response) => Promise<string|undefined>};
   constructor(baseUrl: string, options: HttpClient['options'] = {}) { this.baseUrl=baseUrl; this.options=options; }
   async json(path: string, init: RequestInit = {}): Promise<any> {
     const key=this.options.limiterKey ?? new URL(this.baseUrl).origin;
@@ -51,7 +51,9 @@ export class HttpClient {
         let error:any;try{error=await response.json();}catch{}
         if(error?.error==='rate_limit')throw new UpstreamError('SIMKL is busy; retry deferred',429,Math.max(retry||0,2000));
       }
-      throw new UpstreamError(`Upstream API: HTTP ${response.status}`,response.status,retry || 0);
+      let detail: string|undefined;
+      try { detail = await this.options.errorDetail?.(response.clone()); } catch { /* diagnostic parsing is best effort */ }
+      throw new UpstreamError(`Upstream API: HTTP ${response.status}${detail ? `: ${detail}` : ''}`,response.status,retry || 0);
     }
     if(response.status===204) return undefined;
     try {

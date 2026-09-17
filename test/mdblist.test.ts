@@ -79,11 +79,29 @@ test('MDBList sends real native start, pause, incomplete stop and completed stop
   }
   await provider.push(event({ event: 'stop', played: true, positionMs: 2160000 }), 'series', credentials, checkpoint());
   assert.deepEqual(calls.map(c => c.path), ['/scrobble/start', '/scrobble/pause', '/scrobble/stop', '/scrobble/stop']);
-  assert.deepEqual(calls[1].body, { show: { ids: { tmdb: 1396, imdb: 'tt0903747' }, season: 0, episode: 2 }, progress: 25 });
+  assert.deepEqual(calls[1].body, { show: { ids: { tmdb: 1396, imdb: 'tt0903747' }, season: { number: 0, episode: { number: 2 } } }, progress: 25 });
   assert.equal(calls[3].body.progress, 90);
   assert.ok(calls.every(c => c.method === 'POST'));
   await provider.push(event({ event: 'start', metaId: 'tmdb:278', videoId: 'tmdb:278', ids: undefined }), 'movie', credentials, checkpoint());
   assert.deepEqual(calls.at(-1)!.body, { movie: { ids: { tmdb: 278 } }, progress: 25 });
+});
+
+test('MDBList rounds seek progress and uses the canonical nested episode target', async () => {
+  const { provider, calls } = fixture();
+  await provider.push(event({ event: 'start', positionMs: 771428, durationMs: 2400000 }), 'series', credentials, checkpoint());
+  assert.equal(calls[0].body.progress, 32.14);
+  assert.deepEqual(calls[0].body.show, { ids: { tmdb: 1396, imdb: 'tt0903747' }, season: { number: 0, episode: { number: 2 } } });
+});
+
+test('MDBList keeps safe upstream validation details without exposing the API key', async () => {
+  const f = fixture(c => c.path === '/scrobble/start'
+    ? Response.json({ error: `invalid progress for ${credentials.token}` }, { status: 400 })
+    : undefined);
+  await assert.rejects(f.provider.push(event({ event: 'start' }), 'series', credentials, checkpoint()), (error: any) => {
+    assert.match(error.message, /HTTP 400: invalid progress/);
+    assert.equal(error.message.includes(credentials.token), false);
+    return true;
+  });
 });
 
 test('MDBList accepts decimal-string scrobble confirmations, including HTTP 201 start at zero with played:true', async () => {
@@ -148,7 +166,7 @@ test('MDBList manual marks preserve event time and target one special; cleanup r
   await provider.push(e, 'series', credentials, saved);
   assert.equal(calls.filter(c => c.path === '/sync/watched').length, 1);
   assert.deepEqual(calls[0].body, { shows: [{ ids: { tmdb: 1396, imdb: 'tt0903747' }, seasons: [{ number: 0, episodes: [{ number: 2, watched_at: '2026-09-16T10:00:00.000Z' }] }] }] });
-  assert.deepEqual(calls.at(-1)!.body, { show: { ids: { tmdb: 1396, imdb: 'tt0903747' }, season: 0, episode: 2 } });
+  assert.deepEqual(calls.at(-1)!.body, { show: { ids: { tmdb: 1396, imdb: 'tt0903747' }, season: { number: 0, episode: { number: 2 } } } });
   await provider.push(event({ event: 'unplayed' }), 'series', credentials, checkpoint());
   assert.equal(calls.at(-2)!.path, '/sync/watched/remove');
   assert.equal(JSON.stringify(calls.at(-2)!.body).includes('watched_at'), false);

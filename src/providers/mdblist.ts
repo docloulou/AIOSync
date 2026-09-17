@@ -85,6 +85,27 @@ function checkHistory(value: unknown, watched: boolean): void {
   if (hasContent(row.errors)) throw new UpstreamError('MDBList did not fully apply the history write', 422);
 }
 
+async function safeErrorDetail(response: Response, token: string): Promise<string|undefined> {
+  const contentType = response.headers.get('content-type') ?? '';
+  if (!contentType.toLowerCase().includes('json')) return;
+  let value: any;
+  try { value = await response.json(); } catch { return; }
+  const parts: string[] = [];
+  const collect = (input: unknown): void => {
+    if (typeof input === 'string' && input.trim()) parts.push(input.trim());
+    else if (Array.isArray(input)) for (const item of input) collect(item);
+  };
+  if (value && typeof value === 'object') {
+    for (const key of ['error', 'detail', 'message', 'non_field_errors', 'progress']) collect(value[key]);
+  }
+  if (!parts.length) return;
+  return parts.join('; ')
+    .replaceAll(token, '[redacted]')
+    .replace(/https?:\/\/\S+/gi, '[url]')
+    .replace(/\s+/g, ' ')
+    .slice(0, 240);
+}
+
 /** Personal API keys use MDBList's documented query authentication, server-side only. */
 export class MdblistProvider implements Provider {
   readonly name = 'mdblist' as const;
@@ -104,7 +125,8 @@ export class MdblistProvider implements Provider {
     if (!client) {
       client = new HttpClient('https://api.mdblist.com', {
         fetch: this.fetcher, intervalMs: this.fetcher ? 0 : 100, limiterKey: `mdblist:${credentials.token}`,
-        headers: { 'Content-Type': 'application/json', 'User-Agent': 'AIOSync/1.1.4' },
+        headers: { 'Content-Type': 'application/json', 'User-Agent': 'AIOSync/1.1.5' },
+        errorDetail: response => safeErrorDetail(response, credentials.token),
       });
       this.clients.set(credentials.token, client);
     }
@@ -132,9 +154,17 @@ export class MdblistProvider implements Provider {
   }
   private async pushOnce(event: WatchEvent, type: MediaType, credentials: Credentials, checkpoint: Checkpoint): Promise<PushResult> {
     const t = target(event, type);
-    const body = type === 'movie' ? { movie: { ids: t.ids } } : { show: t };
-    const progress = Number.isFinite(event.positionMs) && event.positionMs! >= 0 && Number.isFinite(event.durationMs)
+    const body = type === 'movie' ? { movie: { ids: t.ids } } : {
+      // MDBList's canonical episode form nests the coordinates under season.
+      // The API schema also describes a flat form, but some live deployments
+      // validate the generated client shape more strictly.
+      show: { ids: t.ids, season: { number: t.season!, episode: { number: t.episode! } } },
+    };
+    const rawProgress = Number.isFinite(event.positionMs) && event.positionMs! >= 0 && Number.isFinite(event.durationMs)
       && event.durationMs! > 0 && event.positionMs! <= event.durationMs! ? event.positionMs! / event.durationMs! * 100 : undefined;
+    // MDBList clients conventionally send at most two decimal places. This
+    // also avoids rejecting long binary-float tails after a seek.
+    const progress = rawProgress === undefined ? undefined : Math.round(rawProgress * 100) / 100;
     const watched = event.event === 'played' || event.event === 'stop' && event.played === true;
     const nativeCompletion = watched && event.event === 'stop' && progress !== undefined && progress >= 80;
     if ((watched && !nativeCompletion) || event.event === 'unplayed') {
