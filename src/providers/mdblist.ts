@@ -130,7 +130,7 @@ export class MdblistProvider implements Provider {
     if (!client) {
       client = new HttpClient('https://api.mdblist.com', {
         fetch: this.fetcher, intervalMs: this.fetcher ? 0 : 100, limiterKey: `mdblist:${credentials.token}`,
-        headers: { 'Content-Type': 'application/json', 'User-Agent': 'AIOSync/1.1.6' },
+        headers: { 'Content-Type': 'application/json', 'User-Agent': 'AIOSync/1.1.7' },
         errorDetail: response => safeErrorDetail(response, credentials.token),
       });
       this.clients.set(credentials.token, client);

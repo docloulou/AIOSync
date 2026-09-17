@@ -170,6 +170,7 @@ test('PMDB explicit watched and unwatched actions still clear only the exact epi
     if (value.event === 'unplayed') {
       assert.equal(calls[0].path, '/api/external/watched?tmdb_id=1399&media_type=tv&season=0&episode=1');
       assert.equal(calls[0].method, 'DELETE');
+      assert.equal(calls.filter(call => call.method === 'POST' && call.path === '/api/external/resume').length, 0);
     } else {
       assert.equal(calls[0].path, '/api/external/watched?dedupe=true');
       assert.equal(calls[0].method, 'POST');

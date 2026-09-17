@@ -14,7 +14,7 @@ export class TrackerService {
   constructor(store:Store,settings:Settings,providers:Record<ProviderName,Provider>){this.store=store;this.settings=settings;this.providers=providers;}
   url(p:Profile){return `${this.settings.baseUrl}/addon/${p.id}/${capability(this.settings.encryptionKey,this.settings.apiKey,p.id,p.token)}/manifest.json`;}
   manifest(p:Profile){return {
-    id:`org.trackerbridge.${p.id}`,version:'1.1.6',name:`AIOSync · ${p.name}`,
+    id:`org.trackerbridge.${p.id}`,version:'1.1.7',name:`AIOSync · ${p.name}`,
     description:'SIMKL / PublicMetaDB / MDBList watch-state sync for AIOStreams Jellyfin',types:['movie','series'],catalogs:[],
     resources:[{name:'watch_state',types:['movie','series'],idPrefixes:['tt','imdb:','tmdb:','tvdb:','kitsu:','mal:','anilist:','anidb:','simkl:','trakt:','mdblist:']}],
     behaviorHints:{configurable:true,configurationRequired:false},

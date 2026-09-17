@@ -189,6 +189,8 @@ export class PmdbProvider implements Provider {
   async push(event: WatchEvent, type: MediaType, credentials: Credentials, checkpoint: Checkpoint): Promise<PushResult> {
     const target = await checkpoint('pmdb:target', () => this.resolve(event, type, credentials));
     if (event.event === 'unplayed') {
+      // PMDB has no "unplayed" resume write. Remove the exact resume record
+      // returned by the filtered list endpoint; never POST position_ms: 0.
       await checkpoint('pmdb:unplayed', async () => {
         const raw = successful(await this.request(`/api/external/watched?${targetParams(target)}`, credentials, { method: 'DELETE' }), 'history deletion');
         if (!integer(raw.deleted, 0)) invalid('history deletion: invalid count');

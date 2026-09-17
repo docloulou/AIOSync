@@ -153,7 +153,7 @@ export class SimklProvider implements Provider {
     let client = this.clients.get(credentials.token);
     if (!client) {
       client = new HttpClient('https://api.simkl.com', {
-        headers: { Authorization: `Bearer ${credentials.token}`, 'User-Agent': 'AIOSync/1.1.6', 'Content-Type': 'application/json' },
+        headers: { Authorization: `Bearer ${credentials.token}`, 'User-Agent': 'AIOSync/1.1.7', 'Content-Type': 'application/json' },
         fetch: this.fetcher, intervalMs: this.fetcher ? 0 : 1100, limiterKey: `simkl:${credentials.token}`,
       });
       this.clients.set(credentials.token, client);
@@ -161,7 +161,7 @@ export class SimklProvider implements Provider {
     return client;
   }
   private path(path: string, params: Record<string, string> = {}): string {
-    return `${path}?${new URLSearchParams({ client_id: this.clientId, 'app-name': 'AIOSync', 'app-version': '1.1.6', ...params })}`;
+    return `${path}?${new URLSearchParams({ client_id: this.clientId, 'app-name': 'AIOSync', 'app-version': '1.1.7', ...params })}`;
   }
   private async serial<T>(token: string, operation: () => Promise<T>): Promise<T> {
     const before = this.operations.get(token) ?? Promise.resolve();

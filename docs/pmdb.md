@@ -9,7 +9,7 @@ PublicMetaDB uses a personal API key from **Settings → API**, sent as `Authori
 | Pull watched history | `GET /api/external/watched?page=N&perPage=500` |
 | Pull resume points | `GET /api/external/resume?page=N&perPage=500` |
 | Mark watched | `POST /api/external/watched?dedupe=true` |
-| Mark unwatched | `DELETE /api/external/watched`, filtered to the exact video |
+| Mark unwatched | `DELETE /api/external/watched`, filtered to the exact video, then `GET /api/external/resume?...` and `DELETE /api/external/resume/:id` for each matching resume record |
 | Save a resume point | `POST /api/external/resume` |
 | Clear a resume point | `DELETE /api/external/resume/:id` |
 | Resolve an IMDb ID | `GET /api/external/mappings/lookup` |
@@ -20,7 +20,7 @@ These are watched/resume APIs, not a separate native scrobble session API. Bulk 
 
 Start, pause, and incomplete stop events save progress only when position and duration are valid and progress is **at least 2% and below 80%**. A start event no longer deletes the last saved point. Missing, invalid, or unsupported progress leaves the remote point unchanged. Valid positions that PMDB cannot represent are retained in AIOSync's local state for its pull responses.
 
-PublicMetaDB ignores progress below 2% and removes resume entries at 80% or above. AIOSync does not send those values to the resume endpoint or infer completion from them. Explicit watched events, completed stops, and unwatched events still clear the corresponding resume entries.
+PublicMetaDB ignores progress below 2% and removes resume entries at 80% or above. AIOSync does not send those values to the resume endpoint or infer completion from them. Explicit watched events, completed stops, and unwatched events still clear the corresponding resume entries. An unwatched event deletes the resume record by its returned PMDB ID; it never tries to clear progress by posting `position_ms: 0`.
 
 The local state is visible through AIOSync, not through other applications querying PublicMetaDB directly. Those applications may retain the older remote position. Resume timestamps are assigned by PublicMetaDB; history writes use the event's timestamp.
 
