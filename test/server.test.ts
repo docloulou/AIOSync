@@ -284,14 +284,14 @@ test('HTTP retry restarts delayed pending jobs in order and preserves checkpoint
   await f.connect(p.id, 'mdblist', 'm'); await f.connect(other.id, 'mdblist', 'other-m');
   await f.configure(p.id, { pushProviders: ['mdblist'] });
   await f.configure(other.id, { pushProviders: ['mdblist'] });
-  const first = { ...movieEvent('delayed-start'), event: 'start' as const, positionMs: 0, durationMs: 3480000 };
-  const second = { ...movieEvent('following-pause'), event: 'pause' as const, played: false, positionMs: 600000, durationMs: 3480000 };
+  const first = { ...movieEvent('delayed-pause'), event: 'pause' as const, positionMs: 0, durationMs: 3480000 };
+  const second = { ...movieEvent('following-stop'), event: 'stop' as const, played: false, positionMs: 600000, durationMs: 3480000 };
   // Seed persisted work without the push route's automatic worker tick.
   for (const e of [first, second]) f.service.enqueue(f.store.profile(p.id)!, 'movie', e);
   f.service.enqueue(f.store.profile(other.id)!, 'movie', movieEvent('other-event'));
   const due = Date.now() + 3600000;
   const saved = JSON.stringify({ 'confirmed-earlier-step': true });
-  f.store.db.prepare("UPDATE jobs SET attempts=6,due=?,error='MDBList: missing scrobble confirmation',checkpoints=? WHERE event_id='delayed-start'").run(due, saved);
+  f.store.db.prepare("UPDATE jobs SET attempts=6,due=?,error='MDBList: missing scrobble confirmation',checkpoints=? WHERE event_id='delayed-pause'").run(due, saved);
   f.store.db.prepare('UPDATE jobs SET due=? WHERE profile=?').run(due, other.id);
   for (const state of ['done', 'running', 'cancelled', 'blocked', 'failed']) {
     const id = `keep-${state}`;
@@ -314,10 +314,48 @@ test('HTTP retry restarts delayed pending jobs in order and preserves checkpoint
     }
   }
   await f.service.tick(); await f.service.tick();
-  assert.deepEqual(f.providers.mdblist.pushes.map(push => push.event.id), ['delayed-start', 'following-pause']);
-  assert.equal((f.store.db.prepare("SELECT status FROM jobs WHERE event_id='following-pause'").get() as any).status, 'done');
-  assert.deepEqual(JSON.parse((f.store.db.prepare("SELECT checkpoints FROM jobs WHERE event_id='delayed-start'").get() as any).checkpoints),
+  assert.deepEqual(f.providers.mdblist.pushes.map(push => push.event.id), ['delayed-pause', 'following-stop']);
+  assert.equal((f.store.db.prepare("SELECT status FROM jobs WHERE event_id='following-stop'").get() as any).status, 'done');
+  assert.deepEqual(JSON.parse((f.store.db.prepare("SELECT checkpoints FROM jobs WHERE event_id='delayed-pause'").get() as any).checkpoints),
     { 'confirmed-earlier-step': true, 'remote-write': { accepted: true } });
+});
+
+test('HTTP purge requires admin access, isolates profiles and cannot be reversed by Retry events', async t=>{
+  const f=await fixture(t),p=await f.profile(),other=await f.profile('Other');
+  for(const profile of [p,other]){await f.connect(profile.id,'mdblist');await f.configure(profile.id,{pushProviders:['mdblist']});}
+  for(const status of ['pending','blocked','failed','running','done','cancelled']){
+    f.service.enqueue(f.store.profile(p.id)!,'movie',movieEvent(status));
+    f.store.db.prepare('UPDATE jobs SET status=?,checkpoints=? WHERE event_id=?').run(status,'{"keep":true}',status);
+  }
+  f.service.enqueue(f.store.profile(other.id)!,'movie',movieEvent('other'));
+  const path=`/api/profiles/${p.id}/purge`;
+  const before=f.store.db.prepare('SELECT * FROM jobs ORDER BY id').all() as any[];
+  assert.equal((await f.request(path,{method:'POST',body:{},auth:false})).status,401);
+  assert.equal((await f.request(path,{method:'POST',body:{},origin:'https://untrusted.example'})).status,403);
+  assert.deepEqual(f.store.db.prepare('SELECT * FROM jobs ORDER BY id').all(),before);
+  const result=await f.request(path,{method:'POST',body:{}});
+  assert.equal(result.status,200);assert.equal(result.data.cancelled,4);
+  await f.request(`/api/profiles/${p.id}/retry`,{method:'POST',body:{}});
+  for(const old of before){
+    const row=f.store.db.prepare('SELECT * FROM jobs WHERE id=?').get(old.id) as any;
+    if(old.profile!==p.id||['done','cancelled'].includes(old.status))assert.deepEqual(row,old);
+    else {assert.equal(row.status,'cancelled');assert.equal(row.checkpoints,old.checkpoints);assert.equal(row.payload,old.payload);}
+  }
+  assert.equal(f.service.enqueue(f.store.profile(p.id)!,'movie',movieEvent('pending')),false);
+  assert.ok(f.store.credentials(p.id,'mdblist'));
+  assert.equal((await f.request(path,{method:'POST',body:{}})).data.cancelled,0);
+});
+
+test('HTTP retry cannot revive expired starts or old queue entries',async t=>{
+  const f=await fixture(t),p=await f.profile();
+  await f.connect(p.id,'mdblist');await f.configure(p.id,{pushProviders:['mdblist']});
+  f.service.enqueue(f.store.profile(p.id)!,'movie',{...movieEvent('old-start'),event:'start',at:Math.floor(Date.now()/1000)-301});
+  f.service.enqueue(f.store.profile(p.id)!,'movie',movieEvent('old-mark'));
+  f.store.db.prepare("UPDATE jobs SET created=?,status='failed' WHERE event_id='old-mark'").run(Date.now()-86401000);
+  await f.request(`/api/profiles/${p.id}/retry`,{method:'POST',body:{}});
+  await f.service.tick();
+  assert.equal(f.providers.mdblist.pushes.length,0);
+  assert.ok((f.store.db.prepare('SELECT status FROM jobs').all() as any[]).every(j=>j.status==='cancelled'));
 });
 
 test('HTTP malformed and bulk events: reject invalid atomic input, split PMDB/MDBList episodes and preserve SIMKL bulk', async (t) => {

@@ -14,6 +14,8 @@ export function loadSettings(env: NodeJS.ProcessEnv = process.env) {
     simklClientSecret:env.SIMKL_CLIENT_SECRET || '',pmdbApiKey:env.PMDB_API_KEY || '',
     simklAccessToken:env.SIMKL_ACCESS_TOKEN || '',mdblistApiKey:env.MDBLIST_API_KEY || '',
     refreshSeconds:Math.max(30,Number(env.SYNC_INTERVAL_SECONDS)||300),
+    startEventTtlSeconds:positive('START_EVENT_TTL_SECONDS',300),
+    jobMaxAgeSeconds:positive('JOB_MAX_AGE_SECONDS',86400),
     maxPullBytes:positive('MAX_PULL_BYTES',4_900_000),
     maxResumeItems:positive('MAX_RESUME_ITEMS',5000),
     maxWatchedMovies:positive('MAX_WATCHED_MOVIES',50000),

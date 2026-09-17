@@ -242,6 +242,14 @@ function profileFooter(profile) {
     await loadProfiles();
     showMessage('Queued retries have been restarted.', 'success');
   }), 'button button-secondary button-small'));
+  actions.append(button('Purge queue', (event) => {
+    if (!window.confirm(`Cancel all pending, blocked, failed and running events for “${profile.name}”? They will not be retried. A request already sent may still finish.`)) return;
+    runBusy(event.currentTarget, async () => {
+      const result = await api(profilePath(profile, '/purge'), { method: 'POST', body: {} });
+      await loadProfiles();
+      showMessage(`${result.cancelled} queued events cancelled. Requests already sent may still finish.`, 'success');
+    });
+  }, 'button button-danger button-small'));
   actions.append(button('Rotate URL', (event) => {
     if (!window.confirm(`Rotate the URL for “${profile.name}”? The old URL will stop working. You will need to replace the addon in your clients.`)) return;
     runBusy(event.currentTarget, async () => {

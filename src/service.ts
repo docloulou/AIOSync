@@ -14,7 +14,7 @@ export class TrackerService {
   constructor(store:Store,settings:Settings,providers:Record<ProviderName,Provider>){this.store=store;this.settings=settings;this.providers=providers;}
   url(p:Profile){return `${this.settings.baseUrl}/addon/${p.id}/${capability(this.settings.encryptionKey,this.settings.apiKey,p.id,p.token)}/manifest.json`;}
   manifest(p:Profile){return {
-    id:`org.trackerbridge.${p.id}`,version:'1.1.3',name:`AIOSync · ${p.name}`,
+    id:`org.trackerbridge.${p.id}`,version:'1.1.4',name:`AIOSync · ${p.name}`,
     description:'SIMKL / PublicMetaDB / MDBList watch-state sync for AIOStreams Jellyfin',types:['movie','series'],catalogs:[],
     resources:[{name:'watch_state',types:['movie','series'],idPrefixes:['tt','imdb:','tmdb:','tvdb:','kitsu:','mal:','anilist:','anidb:','simkl:','trakt:','mdblist:']}],
     behaviorHints:{configurable:true,configurationRequired:false},
@@ -22,12 +22,39 @@ export class TrackerService {
       ...(p.pullProvider&&p.consent?{pull:{items:true,watched:true,ttlSeconds:this.settings.refreshSeconds}}:{})}
   };}
   describe(p:Profile){
+    this.expireJobs(p.id);
     const conns=this.store.db.prepare('SELECT provider,error FROM connections WHERE profile=?').all(p.id) as any[];
     const counts=this.store.db.prepare('SELECT status,COUNT(*) n FROM jobs WHERE profile=? GROUP BY status').all(p.id) as any[];
     const snap=p.pullProvider?this.store.db.prepare('SELECT updated,error FROM snapshots WHERE profile=? AND provider=?').get(p.id,p.pullProvider) as any:undefined;
     const {token,...safe}=p;
     return {...safe,manifestUrl:this.url(p),connections:Object.fromEntries(conns.map(c=>[c.provider,{connected:true,error:c.error}])),
       jobs:{pending:0,blocked:0,failed:0,...Object.fromEntries(counts.map(c=>[c.status,c.n]))},lastSync:snap?.updated,syncError:snap?.error};
+  }
+  expireJobs(profile:string|null=null){
+    const db=this.store.db, now=Date.now();
+    const maxAge=now-this.settings.jobMaxAgeSeconds*1000;
+    const startAge=now-this.settings.startEventTtlSeconds*1000;
+    db.prepare(`UPDATE jobs SET status='cancelled',due=0,error='Expired: maximum queue age reached'
+      WHERE status IN ('pending','blocked','failed') AND created<=? AND (? IS NULL OR profile=?)`).run(maxAge,profile,profile);
+    // A late-delivered start must not bring an old viewing session back to life.
+    db.prepare(`UPDATE jobs SET status='cancelled',due=0,error='Expired: playback start is too old'
+      WHERE status IN ('pending','blocked','failed') AND json_extract(payload,'$.event')='start'
+      AND (created<=? OR json_extract(payload,'$.at')*1000<=?) AND (? IS NULL OR profile=?)`).run(startAge,startAge,profile,profile);
+    db.prepare(`UPDATE jobs AS j SET status='cancelled',due=0,error='Superseded: a newer playback event replaced this start'
+      WHERE j.status IN ('pending','blocked','failed') AND json_extract(j.payload,'$.event')='start'
+      AND (? IS NULL OR j.profile=?) AND EXISTS (
+        SELECT 1 FROM jobs newer WHERE newer.profile=j.profile AND newer.provider=j.provider AND newer.type=j.type
+        AND newer.id>j.id AND newer.status!='cancelled'
+        AND json_extract(newer.payload,'$.at')>=json_extract(j.payload,'$.at')
+        AND (json_extract(newer.payload,'$.videoId')=json_extract(j.payload,'$.videoId') OR EXISTS (
+          SELECT 1 FROM json_each(newer.payload,'$.videos') v WHERE json_extract(v.value,'$.videoId')=json_extract(j.payload,'$.videoId')))
+      )`).run(profile,profile);
+  }
+  purgeJobs(p:Profile){
+    // Retain receipts/checkpoints for deduplication and a visible audit trail.
+    const result=this.store.db.prepare(`UPDATE jobs SET status='cancelled',due=0,error='Purged by administrator'
+      WHERE profile=? AND status IN ('pending','blocked','failed','running')`).run(p.id);
+    return Number(result.changes);
   }
   enqueue(p:Profile,type:MediaType,e:WatchEvent){
     const db=this.store.db;
@@ -71,6 +98,7 @@ export class TrackerService {
     if(this.busy)return;this.busy=true;
     try{
       const db=this.store.db;
+      this.expireJobs();
       // A blocked/retrying job preserves event order for its own connection only.
       const job=db.prepare(`SELECT j.* FROM jobs j WHERE j.status='pending' AND j.due<=? AND NOT EXISTS
         (SELECT 1 FROM jobs older WHERE older.profile=j.profile AND older.provider=j.provider AND older.id<j.id AND older.status IN ('pending','running','blocked')) ORDER BY j.id LIMIT 1`).get(Date.now()) as any;
@@ -90,17 +118,20 @@ export class TrackerService {
       db.prepare('DELETE FROM sessions WHERE expires<?').run(Date.now());
       db.prepare('DELETE FROM oauth WHERE expires<?').run(Date.now());
       db.prepare('DELETE FROM receipts WHERE created<?').run(Date.now()-30*86400000);
-      db.prepare("DELETE FROM jobs WHERE status='done' AND created<?").run(Date.now()-30*86400000);
+      db.prepare("DELETE FROM jobs WHERE status IN ('done','cancelled') AND created<?").run(Date.now()-30*86400000);
     }finally{this.busy=false;}
   }
   async deliver(job:any){
-    const db=this.store.db;let e:WatchEvent=JSON.parse(job.payload);const p=this.store.profile(job.profile);if(!p)return;
-    if(!db.prepare('SELECT 1 FROM jobs WHERE id=?').get(job.id))return;
+    const db=this.store.db;
+    this.expireJobs(job.profile);
+    job=db.prepare("SELECT * FROM jobs WHERE id=? AND status='pending'").get(job.id);
+    if(!job)return;
+    let e:WatchEvent=JSON.parse(job.payload);const p=this.store.profile(job.profile);if(!p)return;
     if(!p.consent||!p.pushProviders.includes(job.provider)){
       db.prepare("UPDATE jobs SET status='blocked',error='Sync disabled' WHERE id=?").run(job.id);return;
     }
     const revision=this.store.connectionRevision(p.id,job.provider);
-    const isCurrent=()=>this.store.connectionRevision(p.id,job.provider)===revision&&!!db.prepare('SELECT 1 FROM jobs WHERE id=?').get(job.id);
+    const isCurrent=()=>this.store.connectionRevision(p.id,job.provider)===revision&&!!db.prepare("SELECT 1 FROM jobs WHERE id=? AND status='running'").get(job.id);
     const assertCurrent=()=>{
       if(!isCurrent())throw new StaleWorkError('Connection replaced during sync');
       const current=this.store.profile(p.id);

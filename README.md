@@ -49,6 +49,8 @@ See [`.env.example`](.env.example) for all settings.
 | `PMDB_API_KEY` | Optional default PublicMetaDB personal API key. |
 | `MDBLIST_API_KEY` | Optional default MDBList personal API key. |
 | `SYNC_INTERVAL_SECONDS` | Remote snapshot refresh and cache freshness, default `300`, minimum `30`. Does not delay push events; `0` uses the default. |
+| `START_EVENT_TTL_SECONDS` | Maximum age of a queued start, default `300` (5 minutes). |
+| `JOB_MAX_AGE_SECONDS` | Maximum queue age for undelivered events, default `86400` (24 hours). |
 | `HOST_BIND`, `HOST_PORT` | Compose host binding, default `127.0.0.1` and `7000`. |
 
 For SIMKL OAuth, register `https://tracker.example.com/oauth/simkl/callback` as your application's redirect URI, using the same origin as `PUBLIC_BASE_URL`. Each profile connects its own account using the shared application. You can also enter an existing access token.
@@ -84,6 +86,8 @@ AIOSync preserves the last useful resume point when a start/seek event lacks rel
 - Bulk marks affect only the listed episodes. The service synchronizes watched state, not an exact rewatch counter. A failed or incomplete pull never becomes an empty history.
 
 More details: [SIMKL](docs/simkl.md), [PublicMetaDB](docs/pmdb.md), [MDBList](docs/mdblist.md).
+
+Queued starts expire after five minutes, using both their event timestamp and queue age. Other undelivered events, including watched/unwatched marks, expire after 24 hours in the queue. A newer event for the same video also cancels an older queued start. These rules apply to persisted jobs after a restart. **Purge queue** cancels a profile's pending, blocked, failed and running work; **Retry events** cannot revive cancelled work. Cancelled events remain in diagnostics for up to 30 days. Purging does not clear remote playback sessions, and a request already sent may still finish.
 
 ## Development and maintenance
 

@@ -35,6 +35,8 @@ Playback percentages accept both numbers and decimal strings such as `"45.00"`, 
 
 Scrobble confirmations also accept decimal strings, including HTTP 201 with `"progress": "0.00"` for a start. A `played: true` flag on a start does not mark the title watched. After updating from a version that rejected these confirmations, use **Retry events** to restart delayed pending or failed jobs. Saved checkpoints and event order are retained.
 
+**Purge queue** cancels queued pushes locally; it does not end a session already accepted by MDBList. The paused playback list alone cannot confirm that a "Live now" session has ended. During a live zero-progress test, `/scrobble/clear` returned 404 while playback remained active; an explicit `/scrobble/stop` at zero, followed by `/scrobble/clear`, returned `deleted: true`. This was a targeted cleanup of that test session, not a general reset of account progress.
+
 Manual watched writes retain the event timestamp. Native completed scrobbles use MDBList's server timestamp. Synchronization maintains watched state, not exact rewatch counts. Unwatching clears the current watched status without deleting MDBList's separate play-history records. An already absent resume (`404` on `/scrobble/clear`) is treated as successful cleanup; authentication and server failures remain errors.
 
 ## History and limits

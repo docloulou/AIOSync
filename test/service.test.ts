@@ -43,6 +43,110 @@ function deferred<T>() {
   return { promise, resolve, reject };
 }
 
+test('expired queue heads stop blocking fresh work without deleting snapshots, receipts or checkpoints', async t => {
+  const sent:string[]=[];
+  const {store,service,p}=setup(t,{push:async e=>{sent.push(e.id);}});
+  p.pullProvider=null;store.save(p);cached(store,p);
+  const data=(store.db.prepare('SELECT data FROM snapshots').get() as any).data;
+  for(const status of ['pending','blocked','failed']){
+    service.enqueue(p,'series',event({id:`old-${status}`,event:'played'}));
+    store.db.prepare('UPDATE jobs SET status=?,created=?,due=?,checkpoints=? WHERE event_id=?').run(
+      status,Date.now()-86401000,Date.now()+3600000,'{"saved":true}',`old-${status}`);
+  }
+  service.enqueue(p,'series',event({id:'fresh'}));
+  await service.tick();
+  assert.deepEqual(sent,['fresh']);
+  for(const row of jobs(store).slice(0,3)){
+    assert.equal(row.status,'cancelled');assert.match(row.error,/maximum queue age/);
+    assert.deepEqual(JSON.parse(row.checkpoints),{saved:true});
+    await service.deliver(row);
+  }
+  assert.equal(service.enqueue(p,'series',event({id:'old-pending',event:'played'})),false);
+  assert.equal((store.db.prepare('SELECT data FROM snapshots').get() as any).data,data);
+  assert.deepEqual(sent,['fresh']);
+});
+
+test('start expiry uses both event time and queue age and honors configured lifetimes', async t => {
+  const {store,service,p}=setup(t);
+  service.settings.startEventTtlSeconds=60;service.settings.jobMaxAgeSeconds=120;
+  const now=Math.floor(Date.now()/1000);
+  for(const [id,at] of [['late-start',now-61],['queued-start',now],['fresh-start',now]] as const){
+    service.enqueue(p,'series',event({id,event:'start',at,videoId:`tt1234567:1:${id==='late-start'?1:id==='queued-start'?2:3}`}));
+  }
+  store.db.prepare("UPDATE jobs SET created=? WHERE event_id='queued-start'").run(Date.now()-61000);
+  service.enqueue(p,'series',event({id:'old-pause',at:now-3600}));
+  store.db.prepare("UPDATE jobs SET created=? WHERE event_id='old-pause'").run(Date.now()-121000);
+  service.expireJobs();
+  const states=Object.fromEntries(jobs(store).map(j=>[j.event_id,j.status]));
+  assert.deepEqual(states,{'late-start':'cancelled','queued-start':'cancelled','fresh-start':'pending','old-pause':'cancelled'});
+});
+
+test('a newer exact-video event cancels a delayed start, including bulk marks, without crossing profiles or providers', async t => {
+  const {store,service,p}=setup(t);
+  const now=Math.floor(Date.now()/1000);
+  p.pushProviders=['pmdb','simkl'];store.save(p);store.connect(p.id,'simkl',{token:'s'});
+  service.enqueue(p,'series',event({id:'start-one',event:'start',at:now}));
+  service.enqueue(p,'series',event({id:'start-two',event:'start',videoId:'tt1234567:1:2',episode:2,at:now}));
+  // The newer operation is routed only to PMDB and targets only episode one.
+  p.pushProviders=['pmdb'];store.save(p);
+  service.enqueue(p,'series',event({id:'pause-one',at:now+1}));
+  const other=store.create({name:'Other',consent:true,pushProviders:['pmdb'],pullProvider:null});
+  store.connect(other.id,'pmdb',{token:'other'});
+  service.enqueue(other,'series',event({id:'stop-two',event:'stop',videoId:'tt1234567:1:2',episode:2,at:now+1}));
+  service.expireJobs();
+  assert.equal(jobs(store).find(j=>j.provider==='pmdb'&&j.event_id==='start-one').status,'cancelled');
+  assert.equal(jobs(store).find(j=>j.provider==='simkl'&&j.event_id==='start-one').status,'pending');
+  assert.equal(jobs(store).find(j=>j.provider==='pmdb'&&j.event_id==='start-two').status,'pending');
+  // SIMKL keeps bulk events intact, so the nested video list must also match.
+  p.pushProviders=['simkl'];store.save(p);
+  service.enqueue(p,'series',event({id:'bulk-mark',event:'played',scope:'season',at:now+2,
+    videoId:undefined,videos:[{videoId:'tt1234567:1:2',season:1,episode:2}]}));
+  service.expireJobs();
+  assert.equal(jobs(store).find(j=>j.provider==='simkl'&&j.event_id==='start-two').status,'cancelled');
+  assert.equal(jobs(store).find(j=>j.provider==='pmdb'&&j.event_id==='start-two').status,'pending');
+});
+
+test('purging an in-flight event prevents later writes and completion from resurrecting cancelled work', async t => {
+  for(const reject of [false,true]){
+    const first=deferred<boolean>();let later=0;
+    const {store,service,p}=setup(t,{push:async(_e,_type,_c,checkpoint)=>{
+      await checkpoint('sent',()=>first.promise);
+      await checkpoint('later',async()=>{later++;return true;});
+      return {localOnly:true};
+    }});
+    service.enqueue(p,'series',event());
+    const pending=service.deliver(jobs(store)[0]);
+    assert.equal(jobs(store)[0].status,'running');
+    assert.equal(service.purgeJobs(p),1);
+    if(reject)first.reject(new UpstreamError('late failure',401));else first.resolve(true);
+    await pending;
+    assert.equal(jobs(store)[0].status,'cancelled');
+    assert.equal(jobs(store)[0].error,'Purged by administrator');
+    assert.equal(later,0);
+    assert.equal(store.db.prepare('SELECT * FROM overlays').all().length,0);
+    assert.equal((store.db.prepare('SELECT error FROM connections').get() as any).error,null);
+    assert.equal(service.enqueue(p,'series',event()),false);
+  }
+});
+
+test('old running work recovered from SQLite at restart expires before any delivery', async t => {
+  const dir=mkdtempSync(join(tmpdir(),'aiosync-expiry-'));
+  const settings=loadSettings({GLOBAL_API_KEY:'a'.repeat(32),ENCRYPTION_KEY:'b'.repeat(64)});
+  let store=new Store(dir,settings.encryptionKey);
+  t.after(()=>{store.close();rmSync(dir,{recursive:true,force:true});});
+  const p=store.create({name:'Restart',consent:true,pushProviders:['pmdb'],pullProvider:null});
+  store.connect(p.id,'pmdb',{token:'test'});
+  let calls=0;
+  const provider:Provider={name:'pmdb',validate:async()=>{},push:async()=>{calls++;},pull:async()=>state()};
+  let service=new TrackerService(store,settings,{pmdb:provider,simkl:provider,mdblist:provider});
+  service.enqueue(p,'series',event({event:'start'}));
+  store.db.prepare("UPDATE jobs SET status='running',created=?").run(Date.now()-301000);
+  store.close();store=new Store(dir,settings.encryptionKey);
+  service=new TrackerService(store,settings,{pmdb:provider,simkl:provider,mdblist:provider});
+  await service.tick();
+  assert.equal(calls,0);assert.equal(jobs(store)[0].status,'cancelled');
+});
+
 test('service finishes a successful push and a normal pause does not tombstone its own remote resume', async t => {
   const { store, service, p } = setup(t);
   const e = event();

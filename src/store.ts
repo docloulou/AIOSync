@@ -20,6 +20,7 @@ export class Store {
       CREATE TABLE IF NOT EXISTS receipts(profile TEXT REFERENCES profiles(id) ON DELETE CASCADE,event_id TEXT,created INTEGER,PRIMARY KEY(profile,event_id));
       CREATE TABLE IF NOT EXISTS jobs(id INTEGER PRIMARY KEY AUTOINCREMENT,profile TEXT REFERENCES profiles(id) ON DELETE CASCADE,provider TEXT,event_id TEXT,type TEXT,payload TEXT,status TEXT DEFAULT 'pending',attempts INTEGER DEFAULT 0,due INTEGER DEFAULT 0,error TEXT,checkpoints TEXT DEFAULT '{}',created INTEGER,UNIQUE(profile,provider,event_id));
       CREATE INDEX IF NOT EXISTS jobs_due ON jobs(status,due,id);
+      CREATE INDEX IF NOT EXISTS jobs_connection_order ON jobs(profile,provider,id);
       CREATE TABLE IF NOT EXISTS snapshots(profile TEXT REFERENCES profiles(id) ON DELETE CASCADE,provider TEXT,data TEXT,updated INTEGER,error TEXT,PRIMARY KEY(profile,provider));
       CREATE TABLE IF NOT EXISTS overlays(profile TEXT REFERENCES profiles(id) ON DELETE CASCADE,provider TEXT,video TEXT,data TEXT,at REAL,PRIMARY KEY(profile,provider,video));
       CREATE TABLE IF NOT EXISTS marks(profile TEXT REFERENCES profiles(id) ON DELETE CASCADE,video TEXT,at REAL,event_id TEXT,PRIMARY KEY(profile,video));
